@@ -74,7 +74,7 @@ $provider = Factory::createProvider(
 );
 ```
 
-The factory also accepts an optional Symfony AI `Contract`. It reuses the OpenResponses contract and converters by default.
+The factory also accepts an optional Symfony AI `Contract`. Its default `Contract\ChatGPTContract` delegates ordinary parts to OpenResponses and preserves native message signatures and reasoning controls. Use `ChatGPTContract::create($normalizers)` when adding host normalizers that must retain these adaptations.
 
 Requests use `https://api.openai.com/v1/responses`, `store: false`, `stream: true` and full history. The adapter omits unsupported preview fields and internal host options. System input becomes developer input; framework system messages become instructions. Local function tools are placed in developer `additional_tools` items without renaming dispatch functions. Their default schema mode is non-strict, matching Pi's optional-field behavior. Hosted tools, tool search and unsupported history items are rejected.
 
@@ -85,6 +85,38 @@ Generation uses a 300-second idle timeout and `max_duration: 0`, overriding an i
 Empty, interrupted, failed and incomplete streams raise errors. Unfinished tool calls never become complete dispatchable calls. Provider error messages and bodies are not copied into exceptions. Known permanent quota codes raise `Exception\SubscriptionLimitException`; host retry classification must treat that type as non-retryable. Transient rate-limit and server errors use Symfony AI exception types. Unknown provider error codes still need live account validation.
 
 Documented terminal subscription restrictions raise `Exception\SubscriptionPolicyException`, not a quota or authentication exception. Hosts must classify this type as non-retryable. Its `errorCode` property contains the recognized SIWC code. An invalid subscriber context does not clear credentials or trigger OAuth automatically. Both HTTP errors and streamed error events use this classification.
+
+## Preserve assistant message items
+
+The stream retains framework `TextDelta`, reasoning, tool, usage, and error conversion. It also emits two package deltas under `Result\Stream\Delta`:
+
+- `MessageStart::getItem()` returns the message header without content, including the original ID and phase when present. `getOutputIndex()` returns the provider index or `null`.
+- `MessageComplete::getContent()` returns one framework `Text`. Its signature contains the exact native message item, including ID, name, phase, annotations, and distinct content parts. `getOutputIndex()` identifies its output position when available.
+
+Messages present only in terminal output still emit `MessageComplete`. Completion is not emitted again when both item-done and terminal frames contain the same message ID. A phase announced on item-added is retained if item-done omits it. No phase is invented for messages without one.
+
+For exact replay, persist both `Text::getText()` and `Text::getSignature()` for each completed message, then rebuild separate `Text` parts in the assistant's original order. `MessageItem::toText($nativeItem)` and `MessageItem::fromText($text)` convert between the native item and its signed text part. Clear the signature when editing text; replay rejects text that disagrees with its signed original.
+
+Do not rely on the framework's `StreamResult::getAssistantMessage()` to preserve these boundaries: its listener merges adjacent text and ignores package deltas. The host must combine completed message parts with the framework listener's reasoning and tool slots. Use `MessageStart` to route subsequent visible text by phase, and `MessageComplete` to recover terminal-only content. Retain commentary in the transcript even if the UI separates it from the final answer. These semantic deltas remain visible through `Factory`; generic `MetadataDelta` events would be consumed by the framework metadata listener.
+
+## Replay reasoning configuration updates
+
+Use `ReasoningConfiguration` as an ordered assistant content part, or attach an effort string under `ReasoningConfiguration::METADATA_KEY` to insert the control before that assistant message:
+
+```php
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ReasoningConfiguration;
+use Symfony\AI\Platform\Message\AssistantMessage;
+use Symfony\AI\Platform\Message\Content\Text;
+
+$message = new AssistantMessage(new ReasoningConfiguration('high'), new Text('After transition'));
+// Alternative for a durable transition anchored before an existing assistant message:
+$message = new AssistantMessage(new Text('After transition'));
+$message->getMetadata()->add(ReasoningConfiguration::METADATA_KEY, 'high');
+```
+
+The normalizer emits `{"type":"configuration_update","reasoning":{"effort":"high"}}` at that position. It does not change a request baseline such as `reasoning.effort: low` or the session's `prompt_cache_key`. The client also accepts validated native control arrays. It rejects malformed controls, unknown effort values, and adjacent controls. Efforts are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`; model support remains the host's responsibility.
+
+The host owns transition persistence, reset and fork scope, model baselines, and placement after compaction. The adapter adds no automatic compaction, truncation, WebSocket continuation, or fallback to a top-level override. Mocked serialization tests do not establish that the subscription route accepts configuration updates; live route acceptance remains unverified.
 
 ## Present usage
 

@@ -59,6 +59,7 @@ final class ModelClient extends OpenResponsesModelClient
         if (!\is_array($input) || !array_is_list($input)) {
             throw new InvalidArgumentException('ChatGPT input must be an array of history items.');
         }
+        $previousControl = false;
         foreach ($input as &$item) {
             if (!\is_array($item)) {
                 throw new InvalidArgumentException('ChatGPT history items must be objects.');
@@ -66,9 +67,17 @@ final class ModelClient extends OpenResponsesModelClient
             if ('system' === ($item['role'] ?? null)) {
                 $item['role'] = 'developer';
             }
-            if (!\in_array($item['type'] ?? null, [null, 'message', 'reasoning', 'function_call', 'function_call_output', 'additional_tools'], true)) {
+            if (!\in_array($item['type'] ?? null, [null, 'message', 'reasoning', 'function_call', 'function_call_output', 'additional_tools', 'configuration_update'], true)) {
                 throw new InvalidArgumentException('ChatGPT history contains an unsupported output or hosted tool item.');
             }
+            $control = 'configuration_update' === ($item['type'] ?? null);
+            if ($control) {
+                ReasoningConfiguration::fromArray($item);
+                if ($previousControl) {
+                    throw new InvalidArgumentException('ChatGPT history must not contain adjacent reasoning configuration updates.');
+                }
+            }
+            $previousControl = $control;
             if (\in_array($item['type'] ?? null, ['function_call', 'function_call_output'], true) && \is_string($item['call_id'] ?? null) && str_contains($item['call_id'], '|')) {
                 [$item['call_id'], $itemId] = explode('|', $item['call_id'], 2);
                 if ('function_call' === $item['type']) {

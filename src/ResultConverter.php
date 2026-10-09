@@ -9,6 +9,7 @@ use Symfony\AI\Platform\Exception\InvalidArgumentException;
 use Symfony\AI\Platform\Result\RawHttpResult;
 use Symfony\AI\Platform\Result\RawResultInterface;
 use Symfony\AI\Platform\Result\ResultInterface;
+use Symfony\AI\Platform\Result\StreamResult;
 
 final class ResultConverter extends OpenResponsesResultConverter
 {
@@ -33,6 +34,16 @@ final class ResultConverter extends OpenResponsesResultConverter
         }
 
         // The direct-token preview is always streamed, even if a consumer omitted its stream option.
-        return parent::convert($result, array_replace($options, ['stream' => true]));
+        $messages = new MessageStream($result);
+        $converted = parent::convert(new RawHttpResult($result->getObject(), $messages), array_replace($options, ['stream' => true]));
+        \assert($converted instanceof StreamResult);
+
+        return new StreamResult((static function () use ($messages, $converted): \Generator {
+            foreach ($converted->getContent() as $delta) {
+                yield from $messages->takeDeltas();
+                yield $delta;
+            }
+            yield from $messages->takeDeltas();
+        })());
     }
 }

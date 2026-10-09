@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ModelClient;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\AuthFixture;
@@ -20,6 +21,52 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class ModelClientTest extends TestCase
 {
+    public function testNativeControlsKeepExactHistoryPositionsAndDoNotOverrideLowBaseline(): void
+    {
+        $body = [];
+        $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$body): MockResponse {
+            $body = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+
+            return new MockResponse(AuthFixture::sse([['type' => 'response.completed', 'response' => ['output' => []]]]));
+        });
+        $input = [
+            ['role' => 'user', 'content' => 'Start'],
+            ['type' => 'configuration_update', 'reasoning' => ['effort' => 'high']],
+            ['role' => 'assistant', 'content' => 'High remains active'],
+            ['role' => 'user', 'content' => 'Next turn'],
+            ['type' => 'configuration_update', 'reasoning' => ['effort' => 'low']],
+            ['role' => 'assistant', 'content' => 'Reset to low'],
+        ];
+        $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
+        $raw = $client->request(new ResponsesModel('test-model'), ['input' => $input], ['reasoning' => ['effort' => 'low'], 'prompt_cache_key' => 'stable', 'previous_response_id' => 'forbidden', 'truncation' => 'auto']);
+        self::assertSame($input, $body['input']);
+        self::assertSame(['effort' => 'low'], $body['reasoning']);
+        self::assertSame('stable', $body['prompt_cache_key']);
+        self::assertFalse($body['store']);
+        self::assertTrue($body['stream']);
+        self::assertArrayNotHasKey('previous_response_id', $body);
+        self::assertArrayNotHasKey('truncation', $body);
+        $raw->getObject()->cancel();
+    }
+
+    /** @param list<array<string, mixed>> $input */
+    #[DataProvider('invalidControls')]
+    public function testRejectsInvalidOrAdjacentNativeControlsBeforeHttpRequest(array $input): void
+    {
+        $http = new MockHttpClient(static function (): never { self::fail('Invalid history must not reach HTTP.'); });
+        $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
+        $this->expectException(InvalidArgumentException::class);
+        $client->request(new ResponsesModel('test-model'), ['input' => $input]);
+    }
+
+    /** @return iterable<string, array{list<array<string, mixed>>}> */
+    public static function invalidControls(): iterable
+    {
+        yield 'invalid shape' => [[['type' => 'configuration_update', 'reasoning' => ['effort' => 'high'], 'role' => 'assistant']]];
+        yield 'invalid effort' => [[['type' => 'configuration_update', 'reasoning' => ['effort' => 'bogus']]]];
+        yield 'adjacent updates' => [[['type' => 'configuration_update', 'reasoning' => ['effort' => 'high']], ['type' => 'configuration_update', 'reasoning' => ['effort' => 'low']]]];
+    }
+
     public function testRestrictsBodyGroupsFunctionsPreservesHistoryAndOverridesHttpDeadline(): void
     {
         $body = $httpOptions = [];
