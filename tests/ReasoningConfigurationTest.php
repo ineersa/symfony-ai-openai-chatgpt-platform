@@ -11,10 +11,20 @@ use Symfony\AI\Platform\Exception\InvalidArgumentException;
 
 final class ReasoningConfigurationTest extends TestCase
 {
-    public function testNativeConfigurationRoundTripsWithoutRequestBaseline(): void
+    #[DataProvider('advertisedEfforts')]
+    public function testNativeConfigurationRoundTripsWithoutRequestBaseline(string $effort): void
     {
-        $item = ['type' => 'configuration_update', 'reasoning' => ['effort' => 'high']];
+        $item = ['type' => 'configuration_update', 'reasoning' => ['effort' => $effort]];
+        self::assertSame($item, (new ReasoningConfiguration($effort))->toArray());
         self::assertSame($item, ReasoningConfiguration::fromArray($item)->toArray());
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function advertisedEfforts(): iterable
+    {
+        foreach (['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as $effort) {
+            yield $effort => [$effort];
+        }
     }
 
     /** @param array<string, mixed> $item */

@@ -44,7 +44,7 @@ final class AuthFixture
     /** @param array<string, mixed> $overrides */
     public static function idToken(string $nonce = 'nonce', array $overrides = [], string $kid = 'test-key'): string
     {
-        return JWT::encode(array_replace(['iss' => OAuthConfig::ISSUER, 'sub' => 'account-one', 'aud' => 'issued-client', 'exp' => time() + 3600, 'nonce' => $nonce], $overrides), self::key(), 'RS256', $kid);
+        return JWT::encode(array_replace(['iss' => OAuthConfig::ISSUER, 'sub' => 'account-one', 'aud' => 'issued-client', 'exp' => 2000000000, 'nonce' => $nonce], $overrides), self::key(), 'RS256', $kid);
     }
 
     public static function record(int $expires = 2000000000): AuthRecord
@@ -60,7 +60,9 @@ final class AuthFixture
 
     public static function service(AuthStorageInterface $storage, HttpClientInterface $httpClient, ?IdTokenVerifier $verifier = null): OAuthService
     {
-        return new OAuthService($storage, $httpClient, $verifier ?? new IdTokenVerifier($httpClient), new OAuthConfig('Test app'), new MockClock('@1900000000'));
+        $clock = new MockClock('@1900000000');
+
+        return new OAuthService($storage, $httpClient, $verifier ?? new IdTokenVerifier($httpClient, clock: $clock), new OAuthConfig('Test app'), $clock);
     }
 
     /** @param list<array<string, mixed>> $events */

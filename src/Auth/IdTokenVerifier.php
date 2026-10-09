@@ -7,6 +7,8 @@ namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth;
 use Firebase\JWT\JWK;
 use Firebase\JWT\JWT;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
+use Symfony\Component\Clock\ClockInterface;
+use Symfony\Component\Clock\NativeClock;
 use Symfony\Contracts\Cache\CacheInterface;
 use Symfony\Contracts\Cache\ItemInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -15,12 +17,33 @@ final readonly class IdTokenVerifier
 {
     private const string JWKS_CACHE_KEY = 'chatgpt.issuer.jwks';
 
-    public function __construct(private HttpClientInterface $httpClient, private CacheInterface $cache = new ArrayAdapter())
+    public function __construct(private HttpClientInterface $httpClient, private CacheInterface $cache = new ArrayAdapter(), private ClockInterface $clock = new NativeClock())
     {
     }
 
     /** @return array{issuer: string, subject: string} */
     public function verify(#[\SensitiveParameter] string $token, string $clientId, string $nonce, bool $requireNonce = true): array
+    {
+        return $this->verifyAt($token, $clientId, $nonce, $requireNonce, null);
+    }
+
+    /**
+     * Verify a rotated identity at its trusted HTTP receipt time from protected pending storage.
+     * Never supply a timestamp derived from token claims or an untrusted caller.
+     *
+     * @return array{issuer: string, subject: string}
+     */
+    public function verifyReceived(#[\SensitiveParameter] string $token, string $clientId, string $nonce, int $receivedAt): array
+    {
+        if ($receivedAt <= 0 || $receivedAt > $this->clock->now()->getTimestamp()) {
+            throw new AuthException('ChatGPT pending receipt time is invalid.');
+        }
+
+        return $this->verifyAt($token, $clientId, $nonce, false, $receivedAt);
+    }
+
+    /** @return array{issuer: string, subject: string} */
+    private function verifyAt(#[\SensitiveParameter] string $token, string $clientId, string $nonce, bool $requireNonce, ?int $receivedAt): array
     {
         if ('' === $nonce) {
             throw new AuthException('An authorization nonce is required for identity verification.');
@@ -33,7 +56,15 @@ final readonly class IdTokenVerifier
                 $this->cache->delete(self::JWKS_CACHE_KEY);
                 $keys = JWK::parseKeySet($this->signingKeys(), 'RS256');
             }
-            $claims = JWT::decode($token, $keys);
+            $timestamp = $receivedAt ?? $this->clock->now()->getTimestamp();
+            $previousTimestamp = JWT::$timestamp;
+            // All network/cache work precedes this synchronous SDK override; restore even when decoding fails.
+            try {
+                JWT::$timestamp = $timestamp;
+                $claims = JWT::decode($token, $keys);
+            } finally {
+                JWT::$timestamp = $previousTimestamp;
+            }
         } catch (\Throwable) {
             // Deliberately discard library/HTTP exception payloads, which can include credentials or bodies.
             throw new AuthException('ChatGPT ID-token signature verification failed.');
@@ -45,10 +76,15 @@ final readonly class IdTokenVerifier
             }
         }
         if (OAuthConfig::ISSUER !== ($claims->iss ?? null) || !\in_array($clientId, $audience, true)
-            || !\is_int($claims->exp ?? null) || $claims->exp <= time()
+            || !\is_int($claims->exp ?? null) || $claims->exp <= $timestamp
             || !\is_string($claims->sub ?? null) || '' === $claims->sub
             || (($requireNonce || property_exists($claims, 'nonce')) && (!\is_string($claims->nonce ?? null) || !hash_equals($nonce, $claims->nonce)))) {
             throw new AuthException('ChatGPT ID-token identity claims are invalid.');
+        }
+        foreach (['iat', 'nbf'] as $claim) {
+            if (property_exists($claims, $claim) && (!\is_int($claims->{$claim}) || $claims->{$claim} < 0 || $claims->{$claim} > $timestamp)) {
+                throw new AuthException('ChatGPT ID-token temporal claims are invalid.');
+            }
         }
         if ((\count($audience) > 1 || isset($claims->azp)) && $clientId !== ($claims->azp ?? null)) {
             throw new AuthException('ChatGPT ID-token authorized party is invalid.');

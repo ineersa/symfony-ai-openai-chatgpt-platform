@@ -11,7 +11,7 @@ use Symfony\AI\Platform\Message\Content\ContentInterface;
 final readonly class ReasoningConfiguration implements ContentInterface
 {
     public const string METADATA_KEY = 'chatgpt.reasoning_effort';
-    private const array EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+    private const array EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
     public function __construct(public string $effort)
     {

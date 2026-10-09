@@ -189,7 +189,7 @@ final readonly class OAuthService
             }
             if ($pending->verifyIdentity) {
                 // OIDC refresh may omit nonce, but a returned nonce must match the original authorization.
-                $identity = $this->idTokenVerifier->verify($pending->idToken, $record->clientId, $record->nonce, false);
+                $identity = $this->idTokenVerifier->verifyReceived($pending->idToken, $record->clientId, $record->nonce, $pending->receivedAt);
                 $this->assertIdentity($record, $identity['issuer'], $identity['subject']);
             }
 
@@ -313,7 +313,9 @@ final readonly class OAuthService
             throw new AuthException('ChatGPT refresh response is missing valid credentials, identity or expiry.');
         }
 
-        return new PendingRefreshDTO($access, $refresh, $this->clock->now()->getTimestamp() + $expiry, $idToken, preg_split('/\s+/', trim($scope)) ?: [], \array_key_exists('id_token', $token));
+        $receivedAt = $this->clock->now()->getTimestamp();
+
+        return new PendingRefreshDTO($access, $refresh, $receivedAt + $expiry, $idToken, preg_split('/\s+/', trim($scope)) ?: [], \array_key_exists('id_token', $token), $receivedAt);
     }
 
     private function assertRegistration(?AuthRecord $record, ?string $clientId): void

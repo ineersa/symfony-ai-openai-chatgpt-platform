@@ -15,8 +15,9 @@ final readonly class PendingRefreshDTO
         #[\SensitiveParameter] public string $idToken,
         public array $scopes,
         public bool $verifyIdentity,
+        public int $receivedAt,
     ) {
-        if ('' === $access || '' === $refresh || '' === $idToken || $expires <= 0) {
+        if ('' === $access || '' === $refresh || '' === $idToken || $expires <= 0 || $receivedAt <= 0) {
             throw new AuthException('Invalid pending ChatGPT refresh.');
         }
     }
@@ -41,7 +42,7 @@ final readonly class PendingRefreshDTO
                 throw new AuthException('Invalid pending ChatGPT refresh.');
             }
         }
-        if (!\is_int($data['expires'] ?? null) || !\is_bool($data['verifyIdentity'] ?? null)
+        if (!\is_int($data['expires'] ?? null) || !\is_bool($data['verifyIdentity'] ?? null) || !\is_int($data['receivedAt'] ?? null)
             || !\is_array($data['scopes'] ?? null) || !array_is_list($data['scopes'])) {
             throw new AuthException('Invalid pending ChatGPT refresh.');
         }
@@ -51,6 +52,6 @@ final readonly class PendingRefreshDTO
             }
         }
 
-        return new self($data['access'], $data['refresh'], $data['expires'], $data['idToken'], $data['scopes'], $data['verifyIdentity']);
+        return new self($data['access'], $data['refresh'], $data['expires'], $data['idToken'], $data['scopes'], $data['verifyIdentity'], $data['receivedAt']);
     }
 }

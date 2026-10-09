@@ -12,10 +12,12 @@ use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\AuthRecord;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\AuthStorageInterface;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\IdTokenVerifier;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\OAuthConfig;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\OAuthService;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\PendingRefreshDTO;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\AuthFixture;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\InMemoryAuthStorage;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\IsolatedTestCase;
+use Symfony\Component\Clock\MockClock;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Symfony\Component\Lock\LockFactory;
@@ -23,6 +25,69 @@ use Symfony\Component\Lock\Store\FlockStore;
 
 final class OAuthServiceTest extends IsolatedTestCase
 {
+    #[DataProvider('delayedRestarts')]
+    public function testRestartVerifiesPendingIdentityAtReceiptAfterIdExpiryAndRedeemsOnlyReplacement(int $delay, int $refreshCount): void
+    {
+        $clock = new MockClock('@1900000000');
+        $receivedAt = $clock->now()->getTimestamp();
+        $path = $this->directory.'/delayed-rotation.json';
+        $locks = new LockFactory(new FlockStore($this->directory));
+        $store = new AuthFileStore($path, $locks);
+        $identity = AuthFixture::record();
+        $store->update(static fn () => $identity);
+        $rotated = AuthFixture::token('nonce');
+        $rotated['id_token'] = AuthFixture::idToken(overrides: ['exp' => $receivedAt + 10, 'iat' => $receivedAt, 'nbf' => $receivedAt]);
+        $refreshes = [];
+        $keyFetches = 0;
+        $previousTimestamp = JWT::$timestamp;
+        $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$refreshes, &$keyFetches, $rotated, $previousTimestamp): MockResponse {
+            self::assertSame($previousTimestamp, JWT::$timestamp, 'No SDK clock override may span HTTP work.');
+            if ('POST' === $method) {
+                parse_str($options['body'], $body);
+                $refreshes[] = $body['refresh_token'];
+
+                return new MockResponse(1 === \count($refreshes) ? json_encode($rotated, \JSON_THROW_ON_ERROR) : '{"access_token":"fresh-access","refresh_token":"fresh-refresh","expires_in":3600}');
+            }
+            ++$keyFetches;
+
+            return new MockResponse(1 === $keyFetches ? '{"error":"secret-marker"}' : json_encode(AuthFixture::jwks(), \JSON_THROW_ON_ERROR), ['http_code' => 1 === $keyFetches ? 503 : 200]);
+        });
+        $service = new OAuthService($store, $http, new IdTokenVerifier($http, clock: $clock), new OAuthConfig('Test app'), $clock);
+        try {
+            $service->refreshCredentials();
+            self::fail('Expected post-rotation JWKS failure.');
+        } catch (AuthException $error) {
+            self::assertNull($error->getPrevious());
+        }
+        $pending = $store->load()?->pendingRefresh;
+        self::assertNotNull($pending);
+        self::assertSame($receivedAt, $pending->receivedAt);
+        self::assertSame($receivedAt + 3600, $pending->expires);
+        $clock->modify('+'.$delay.' seconds');
+        $restarted = new AuthFileStore($path, $locks);
+        self::assertEquals($pending, $restarted->load()?->pendingRefresh);
+        $verifier = new IdTokenVerifier($http, clock: $clock);
+        try {
+            $verifier->verify($pending->idToken, 'issued-client', 'nonce');
+            self::fail('Ordinary current-time verification must reject the expired ID token.');
+        } catch (AuthException) {
+            self::assertSame($previousTimestamp, JWT::$timestamp);
+        }
+        $worker = new OAuthService($restarted, $http, $verifier, new OAuthConfig('Test app'), $clock);
+        self::assertSame(1 === $refreshCount ? 'new-access' : 'fresh-access', $worker->accessToken());
+        self::assertSame(1 === $refreshCount ? ['test-refresh'] : ['test-refresh', 'new-refresh'], $refreshes);
+        self::assertSame($previousTimestamp, JWT::$timestamp);
+        self::assertSame('account-one', $restarted->load()?->subject);
+        self::assertNull($restarted->load()?->pendingRefresh);
+    }
+
+    /** @return iterable<string, array{int, int}> */
+    public static function delayedRestarts(): iterable
+    {
+        yield 'ID expired but access still current' => [20, 1];
+        yield 'ID and access expired' => [4000, 2];
+    }
+
     #[DataProvider('verificationRetries')]
     public function testRotatedRefreshSurvivesJwksFailureAndResumesWithoutAnotherRefresh(bool $restart): void
     {
@@ -51,7 +116,7 @@ final class OAuthServiceTest extends IsolatedTestCase
 
             return new MockResponse(json_encode(AuthFixture::jwks(1 === $keyFetches ? 'test-key' : 'rotated-key'), \JSON_THROW_ON_ERROR));
         });
-        $verifier = new IdTokenVerifier($http);
+        $verifier = new IdTokenVerifier($http, clock: new MockClock('@1900000000'));
         $verifier->verify($record->idToken ?? '', $record->clientId, $record->nonce);
         $service = AuthFixture::service($store, $http, $verifier);
         try {
@@ -94,7 +159,7 @@ final class OAuthServiceTest extends IsolatedTestCase
     public function testExpiredPendingAccessRefreshesReplacementOnlyAfterIdentityVerification(): void
     {
         $identity = AuthFixture::record();
-        $pending = new PendingRefreshDTO('expired-access', 'rotated-refresh', 1, AuthFixture::idToken(), $identity->scopes, true);
+        $pending = new PendingRefreshDTO('expired-access', 'rotated-refresh', 1, AuthFixture::idToken(), $identity->scopes, true, 1900000000);
         $storage = new InMemoryAuthStorage(new AuthRecord($identity->clientId, null, null, 0, $identity->idToken, $identity->issuer, $identity->subject, $identity->scopes, $identity->nonce, $pending));
         $methods = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use ($storage, &$methods): MockResponse {
@@ -115,7 +180,7 @@ final class OAuthServiceTest extends IsolatedTestCase
     public function testDisconnectRevokesPendingReplacementAndRetainsIssuedClient(): void
     {
         $identity = AuthFixture::record();
-        $pending = new PendingRefreshDTO('pending-access', 'pending-refresh', 2000000000, AuthFixture::idToken('wrong-nonce'), $identity->scopes, true);
+        $pending = new PendingRefreshDTO('pending-access', 'pending-refresh', 2000000000, AuthFixture::idToken('wrong-nonce'), $identity->scopes, true, 1900000000);
         $storage = new InMemoryAuthStorage(new AuthRecord($identity->clientId, null, null, 0, $identity->idToken, $identity->issuer, $identity->subject, $identity->scopes, $identity->nonce, $pending));
         $http = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
             if ('GET' === $method) {
@@ -203,6 +268,7 @@ final class OAuthServiceTest extends IsolatedTestCase
             return new MockResponse(json_encode('POST' === $method ? $replacement : AuthFixture::jwks(), \JSON_THROW_ON_ERROR));
         });
         $service = AuthFixture::service($storage, $http);
+        $saved = null;
         foreach ([true, false] as $force) {
             try {
                 $service->refreshCredentials($force);
@@ -210,6 +276,11 @@ final class OAuthServiceTest extends IsolatedTestCase
             } catch (AuthException $error) {
                 self::assertNull($error->getPrevious());
                 self::assertStringNotContainsString('secret-marker', $error->getMessage());
+                if (null === $saved) {
+                    $saved = $storage->load();
+                } else {
+                    self::assertSame($saved, $storage->load());
+                }
             }
         }
         self::assertNull($storage->record?->access);
@@ -224,6 +295,12 @@ final class OAuthServiceTest extends IsolatedTestCase
     public static function invalidPendingIdentities(): iterable
     {
         yield 'audience' => [['aud' => 'wrong-client'], 'test-key', false];
+        yield 'issuer' => [['iss' => 'https://attacker.invalid'], 'test-key', false];
+        yield 'authorized party' => [['azp' => 'wrong-client'], 'test-key', false];
+        yield 'expired at receipt' => [['exp' => 1900000000], 'test-key', false];
+        yield 'not yet valid at receipt' => [['nbf' => 1900000001], 'test-key', false];
+        yield 'issued in future even with valid nbf' => [['iat' => 1900000001, 'nbf' => 1900000000], 'test-key', false];
+        yield 'invalid temporal type' => [['iat' => '1900000000'], 'test-key', false];
         yield 'account binding' => [['sub' => 'wrong-account'], 'test-key', false];
         yield 'unknown signing key' => [[], 'unknown-key', false];
         yield 'bad signature' => [[], 'test-key', true];
@@ -668,7 +745,7 @@ final class OAuthServiceTest extends IsolatedTestCase
 
     public function testRefreshAllowsOmittedNonceInNewSignedIdentityButRetainsAuthorizationNonce(): void
     {
-        $idToken = JWT::encode(['iss' => OAuthConfig::ISSUER, 'sub' => 'account-one', 'aud' => 'issued-client', 'exp' => time() + 3600], AuthFixture::key(), 'RS256', 'test-key');
+        $idToken = JWT::encode(['iss' => OAuthConfig::ISSUER, 'sub' => 'account-one', 'aud' => 'issued-client', 'exp' => 2000000000], AuthFixture::key(), 'RS256', 'test-key');
         $storage = new InMemoryAuthStorage(AuthFixture::record(1));
         $http = new MockHttpClient([new MockResponse(json_encode(['access_token' => 'new-access', 'expires_in' => 3600, 'id_token' => $idToken], \JSON_THROW_ON_ERROR)), new MockResponse(json_encode(AuthFixture::jwks(), \JSON_THROW_ON_ERROR))]);
         $updated = AuthFixture::service($storage, $http)->refreshCredentials();
