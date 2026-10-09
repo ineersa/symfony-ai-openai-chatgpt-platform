@@ -47,6 +47,8 @@ The service uses League OAuth PKCE S256, fresh state and nonce, and the direct-t
 
 Refresh re-reads under the storage lock, rotates credentials together, retains identity when refresh omits an ID token, and validates a newly returned identity. Refresh may omit nonce; a supplied nonce must match the saved authorization. Token operations have a separate 30-second duration budget. Remote disconnect discovers the revocation endpoint. A revocation failure leaves local credentials intact and raises an error rather than reporting success.
 
+Confirmed unusable refresh-token errors clear access, refresh, and ID tokens under the same storage lock before raising `AuthException`. The issued client ID remains saved for the next login. Temporary failures, `invalid_client`, and unknown errors preserve the grant.
+
 `AuthStorageInterface` exposes `installationId()`, `load()` and atomic `update(callable)`. Custom storage must provide the same cross-worker read/update guarantees. `AuthRecord` contains registration, identity, scopes, nonce and nullable grant credentials. `load() !== null` does not imply a connected account; pending and disconnected registrations have `access === null`.
 
 ## Configure inference
@@ -74,6 +76,8 @@ Encrypted reasoning is requested for thinking-capable models and replayed throug
 Generation uses a 300-second idle timeout and `max_duration: 0`, overriding an injected client's total duration default for this request only. Supply an ordinary Symfony HTTP client or a host-controlled decorator; the package adds no automatic transport or whole-turn retry. It uses framework `AsyncResponse` and `RawSseStream`, avoiding `EventSourceHttpClient`'s automatic reconnection policy. HTTP 401 does not trigger an inline replay. The host owns retry policy and cancellation through the preserved `RawHttpResult` response's `cancel()` method.
 
 Empty, interrupted, failed and incomplete streams raise errors. Unfinished tool calls never become complete dispatchable calls. Provider error messages and bodies are not copied into exceptions. Known permanent quota codes raise `Exception\SubscriptionLimitException`; host retry classification must treat that type as non-retryable. Transient rate-limit and server errors use Symfony AI exception types. Unknown provider error codes still need live account validation.
+
+Documented terminal subscription restrictions raise `Exception\SubscriptionPolicyException`, not a quota or authentication exception. Hosts must classify this type as non-retryable. Its `errorCode` property contains the recognized SIWC code. An invalid subscriber context does not clear credentials or trigger OAuth automatically. Both HTTP errors and streamed error events use this classification.
 
 ## Present usage
 

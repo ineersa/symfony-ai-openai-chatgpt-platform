@@ -7,6 +7,7 @@ namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionLimitException;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionPolicyException;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ResponsesStream;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ResultConverter;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\AuthFixture;
@@ -46,6 +47,15 @@ final class ResultConverterTest extends TestCase
         yield 'rate limit' => [429, 'rate_limit_exceeded', RateLimitExceededException::class];
         yield 'subscription exhausted' => [429, 'insufficient_quota', SubscriptionLimitException::class];
         yield 'unavailable' => [503, 'server_error', ServerException::class];
+        yield 'subscription usage limit' => [429, 'subscription_sharing_usage_limit_exceeded', SubscriptionLimitException::class];
+        yield 'not eligible' => [403, 'subscription_sharing_user_not_eligible', SubscriptionPolicyException::class];
+        yield 'unsupported capability' => [400, 'subscription_sharing_unsupported_capability', SubscriptionPolicyException::class];
+        yield 'unsupported route' => [403, 'subscription_sharing_route_not_supported', SubscriptionPolicyException::class];
+        yield 'scope' => [403, 'chatpass_v2_scope_not_authorized', SubscriptionPolicyException::class];
+        yield 'authorization context' => [403, 'chatpass_v2_invalid_authorization_context', SubscriptionPolicyException::class];
+        yield 'invalid user' => [401, 'subscription_sharing_invalid_user', SubscriptionPolicyException::class];
+        yield 'usage unavailable' => [503, 'subscription_sharing_usage_unavailable', ServerException::class];
+        yield 'user unavailable' => [503, 'subscription_sharing_user_unavailable', ServerException::class];
     }
 
     public function testProgressThenErrorDoesNotRetryOrReportACompleteTool(): void

@@ -40,6 +40,10 @@ final class ResponsesStreamTest extends TestCase
     /** @return iterable<string, array{list<array<string, mixed>>, class-string<\Throwable>}> */
     public static function failedStreams(): iterable
     {
+        foreach (ResultConverterTest::httpErrors() as $name => [, $code, $exception]) {
+            yield 'structured '.$name => [[['type' => 'response.failed', 'response' => ['error' => ['code' => $code, 'message' => 'secret-marker']]]], $exception];
+            yield 'event '.$name => [[['type' => 'error', 'code' => $code, 'message' => 'secret-marker']], $exception];
+        }
         yield 'empty' => [[], IncompleteStreamException::class];
         yield 'partial text' => [[['type' => 'response.output_text.delta', 'delta' => 'partial']], IncompleteStreamException::class];
         yield 'unfinished call even with completed' => [[['type' => 'response.output_item.added', 'item' => ['type' => 'function_call', 'id' => 'fc_one', 'call_id' => 'call_one', 'name' => 'read']], ['type' => 'response.completed', 'response' => ['output' => []]]], IncompleteStreamException::class];

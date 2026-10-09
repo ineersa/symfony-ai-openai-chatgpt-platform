@@ -19,6 +19,67 @@ use Symfony\Component\Lock\Store\FlockStore;
 
 final class OAuthServiceTest extends IsolatedTestCase
 {
+    /** @param array<string, mixed> $body */
+    #[DataProvider('refreshFailures')]
+    public function testRefreshFailurePersistsOnlyConfirmedUnusableTokens(array $body, int $status, bool $terminal): void
+    {
+        $record = AuthFixture::record();
+        $storage = new AuthFileStore($this->directory.'/refresh-errors.json', new LockFactory(new FlockStore($this->directory)));
+        $storage->update(static fn () => $record);
+        $client = new MockHttpClient(new MockResponse(json_encode($body, \JSON_THROW_ON_ERROR), ['http_code' => $status]));
+        $service = AuthFixture::service($storage, $client);
+        try {
+            $service->refreshCredentials();
+            self::fail('Expected refresh failure.');
+        } catch (AuthException $error) {
+            self::assertNull($error->getPrevious());
+            self::assertStringNotContainsString('secret-marker', $error->getMessage());
+            $saved = $storage->load();
+            self::assertNotNull($saved);
+            if ($terminal) {
+                self::assertNull($saved->access);
+                self::assertNull($saved->refresh);
+                self::assertNull($saved->idToken);
+                self::assertSame($record->clientId, $saved->clientId);
+                parse_str((string) parse_url($service->beginAuthorization()->url, \PHP_URL_QUERY), $query);
+                self::assertSame($record->clientId, $query['client_id']);
+                self::assertArrayNotHasKey('id_token_hint', $query);
+            } else {
+                self::assertEquals($record, $saved);
+            }
+        }
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, int, bool}> */
+    public static function refreshFailures(): iterable
+    {
+        foreach (['invalid_grant', 'invalid_refresh_token', 'token_expired', 'refresh_token_expired', 'refresh_token_invalidated', 'refresh_token_reused'] as $code) {
+            yield $code => [['error' => $code, 'error_description' => 'secret-marker'], 400, true];
+            yield $code.' structured' => [['error' => ['code' => $code, 'message' => 'secret-marker']], 401, true];
+        }
+        yield 'invalid client' => [['error' => 'invalid_client'], 400, false];
+        yield 'unknown' => [['error' => 'unknown', 'message' => 'secret-marker'], 400, false];
+        yield 'temporary' => [['error' => 'server_error'], 503, false];
+        yield 'temporary terminal-looking body' => [['error' => 'invalid_grant'], 503, false];
+    }
+
+    public function testNetworkFailurePreservesRefreshGrantWithoutExceptionChain(): void
+    {
+        $record = AuthFixture::record();
+        $storage = new InMemoryAuthStorage($record);
+        $client = new MockHttpClient(static function (): never {
+            throw new \Symfony\Component\HttpClient\Exception\TransportException('secret-marker');
+        });
+        try {
+            AuthFixture::service($storage, $client)->refreshCredentials();
+            self::fail('Expected network failure.');
+        } catch (AuthException $error) {
+            self::assertSame($record, $storage->load());
+            self::assertNull($error->getPrevious());
+            self::assertStringNotContainsString('secret-marker', $error->getMessage());
+        }
+    }
+
     public function testFirstRegistrationVerifiesGrantAndPersistsIssuedClient(): void
     {
         $nonce = '';

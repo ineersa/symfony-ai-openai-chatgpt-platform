@@ -6,6 +6,7 @@ namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT;
 
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\OAuthConfig;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionLimitException;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionPolicyException;
 use Symfony\AI\Platform\Exception\AuthenticationException;
 use Symfony\AI\Platform\Exception\BadRequestException;
 use Symfony\AI\Platform\Exception\ContentFilterException;
@@ -20,8 +21,16 @@ final class ProviderErrorMapper
     public static function throwError(array $error, ?int $status = null): never
     {
         $codes = array_filter([$error['code'] ?? null, $error['type'] ?? null], static fn (mixed $value): bool => \is_string($value));
-        if ([] !== array_intersect($codes, ['insufficient_quota', 'usage_limit_reached', 'subscription_limit_reached', 'billing_hard_limit_reached'])) {
+        if ([] !== array_intersect($codes, ['subscription_sharing_usage_limit_exceeded', 'insufficient_quota', 'usage_limit_reached', 'subscription_limit_reached', 'billing_hard_limit_reached'])) {
             throw new SubscriptionLimitException();
+        }
+        foreach (['subscription_sharing_user_not_eligible', 'subscription_sharing_unsupported_capability', 'subscription_sharing_route_not_supported', 'chatpass_v2_scope_not_authorized', 'chatpass_v2_invalid_authorization_context', 'subscription_sharing_invalid_user'] as $code) {
+            if (\in_array($code, $codes, true)) {
+                throw new SubscriptionPolicyException($code);
+            }
+        }
+        if ([] !== array_intersect($codes, ['subscription_sharing_usage_unavailable', 'subscription_sharing_user_unavailable'])) {
+            throw new ServerException($status, 'ChatGPT is temporarily unavailable.');
         }
         if (\in_array('context_length_exceeded', $codes, true)) {
             throw new ExceedContextSizeException('ChatGPT context exceeds the model limit.');

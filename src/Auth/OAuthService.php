@@ -125,7 +125,8 @@ final readonly class OAuthService
 
     public function refreshCredentials(bool $force = true): AuthRecord
     {
-        return $this->storage->update(function (?AuthRecord $record) use ($force): AuthRecord {
+        $unusable = false;
+        $updated = $this->storage->update(function (?AuthRecord $record) use ($force, &$unusable): AuthRecord {
             if (null === $record || null === $record->access || null === $record->refresh) {
                 throw new AuthException('ChatGPT is not connected. Run auth:chatgpt login.');
             }
@@ -136,15 +137,27 @@ final readonly class OAuthService
                 return $record;
             }
             // The store re-reads under the lock before this network call, so another worker's rotation wins.
-            $token = $this->requestToken([
-                'grant_type' => 'refresh_token',
-                'client_id' => $record->clientId,
-                'refresh_token' => $record->refresh,
-                'resource' => OAuthConfig::RESOURCE,
-            ]);
+            try {
+                $token = $this->requestToken([
+                    'grant_type' => 'refresh_token',
+                    'client_id' => $record->clientId,
+                    'refresh_token' => $record->refresh,
+                    'resource' => OAuthConfig::RESOURCE,
+                ]);
+            } catch (UnusableRefreshTokenException) {
+                $unusable = true;
+
+                // Persist removal under this lock before surfacing the terminal failure.
+                return AuthRecord::registration($record->clientId, $record->nonce);
+            }
 
             return $this->tokenRecord($token, $record->clientId, null, $record);
         });
+        if ($unusable) {
+            throw new AuthException('ChatGPT refresh credentials are no longer usable. Run auth:chatgpt login.');
+        }
+
+        return $updated;
     }
 
     public function disconnect(): void
@@ -199,12 +212,25 @@ final readonly class OAuthService
     {
         try {
             $response = $this->httpClient->request($method, $url, $options + ['timeout' => 15, 'max_duration' => 30, 'max_redirects' => 0, 'headers' => ['Accept' => 'application/json']]);
-            $data = $response->toArray();
+            $status = $response->getStatusCode();
+            $data = $response->toArray(false);
+            if ($status >= 400 && $status < 500 && 'refresh_token' === ($options['body']['grant_type'] ?? null)) {
+                $error = $data['error'] ?? null;
+                $code = \is_array($error) ? ($error['code'] ?? $error['type'] ?? null) : $error;
+                if (\in_array($code, ['invalid_grant', 'invalid_refresh_token', 'token_expired', 'refresh_token_expired', 'refresh_token_invalidated', 'refresh_token_reused'], true)) {
+                    throw new UnusableRefreshTokenException();
+                }
+            }
+            if ($status < 200 || $status >= 300) {
+                throw new AuthException('OAuth endpoint rejected the request.');
+            }
             if (array_is_list($data)) {
                 throw new AuthException('OAuth endpoint returned a list.');
             }
 
             return $data;
+        } catch (UnusableRefreshTokenException $exception) {
+            throw $exception;
         } catch (\Throwable) {
             throw new AuthException('ChatGPT OAuth endpoint failed or returned invalid data.');
         }
