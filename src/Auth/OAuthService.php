@@ -37,10 +37,12 @@ final readonly class OAuthService
             'scope' => OAuthConfig::SCOPE,
             'nonce' => $nonce,
             'resource' => OAuthConfig::RESOURCE,
-            'agent_name_hint' => $this->config->appName,
             'ext_agent_host_id' => $hostId,
         ];
-        if (null !== $record?->idToken) {
+        if (null === $record) {
+            $options['agent_name_hint'] = $this->config->appName;
+        }
+        if (null !== $record?->access && null !== $record->idToken) {
             $options['id_token_hint'] = $record->idToken;
         }
         $url = $provider->getAuthorizationUrl($options);

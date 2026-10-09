@@ -43,6 +43,7 @@ final class OAuthServiceTest extends IsolatedTestCase
         $nonce = $request->nonce;
         parse_str((string) parse_url($request->url, \PHP_URL_QUERY), $query);
         self::assertSame('dynamic_agent_client', $query['client_id']);
+        self::assertSame('Test app', $query['agent_name_hint']);
         self::assertSame('urn:uuid:00000000-0000-4000-8000-000000000001', $query['ext_agent_host_id']);
         self::assertSame('S256', $query['code_challenge_method']);
         self::assertArrayNotHasKey('approval_prompt', $query);
@@ -55,7 +56,7 @@ final class OAuthServiceTest extends IsolatedTestCase
         self::assertCount(2, $requests);
     }
 
-    public function testReauthorizationUsesSavedClientAndAcceptsOmittedCallbackClient(): void
+    public function testDisconnectedReauthorizationUsesSavedClientAndAcceptsOmittedCallbackClient(): void
     {
         $nonce = '';
         $client = new MockHttpClient(static function (string $method, string $url) use (&$nonce): MockResponse {
@@ -67,9 +68,27 @@ final class OAuthServiceTest extends IsolatedTestCase
         $nonce = $request->nonce;
         parse_str((string) parse_url($request->url, \PHP_URL_QUERY), $query);
         self::assertSame('issued-client', $query['client_id']);
-        self::assertSame($storage->record?->idToken, $query['id_token_hint']);
+        self::assertArrayNotHasKey('id_token_hint', $query);
+        self::assertArrayNotHasKey('agent_name_hint', $query);
         self::assertSame('new-access', $service->completeManualAuthorization($request, 'http://127.0.0.1:1455/auth/callback?code=code&state='.$request->state)->access);
         self::assertNotSame($request->state, $service->beginAuthorization()->state);
+    }
+
+    public function testActiveReauthorizationRetainsRegistrationAndIdentityWithTokenHint(): void
+    {
+        $record = AuthFixture::record();
+        $storage = new InMemoryAuthStorage($record);
+        $client = new MockHttpClient(static function (): never { self::fail('Unexpected HTTP request.'); });
+        $request = AuthFixture::service($storage, $client)->beginAuthorization();
+        parse_str((string) parse_url($request->url, \PHP_URL_QUERY), $query);
+        self::assertSame('issued-client', $query['client_id']);
+        self::assertSame('issued-client', $request->registeredClientId);
+        self::assertSame($record->idToken, $query['id_token_hint']);
+        self::assertArrayNotHasKey('agent_name_hint', $query);
+        self::assertSame($record, $storage->load());
+        self::assertNotNull($record->idToken);
+        self::assertSame(OAuthConfig::ISSUER, $record->issuer);
+        self::assertSame('account-one', $record->subject);
     }
 
     /** @param array<string, mixed> $callback */
@@ -258,6 +277,7 @@ final class OAuthServiceTest extends IsolatedTestCase
         self::assertSame('issued-client', $query['client_id']);
         self::assertSame($hostId, $query['ext_agent_host_id']);
         self::assertArrayNotHasKey('id_token_hint', $query);
+        self::assertArrayNotHasKey('agent_name_hint', $query);
     }
 
     public function testRefreshAllowsOmittedNonceInNewSignedIdentityButRetainsAuthorizationNonce(): void
