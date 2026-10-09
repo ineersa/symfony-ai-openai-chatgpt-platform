@@ -17,12 +17,14 @@ final readonly class AuthRecord
         public ?string $subject,
         public array $scopes,
         public string $nonce,
+        public ?PendingRefreshDTO $pendingRefresh = null,
     ) {
         $hasIdentity = null !== $idToken;
         if ('' === $clientId || '' === $idToken || '' === $nonce || $expires < 0
             || ($hasIdentity && (OAuthConfig::ISSUER !== $issuer || null === $subject || '' === $subject))
             || (!$hasIdentity && (null !== $issuer || null !== $subject || null !== $access))
-            || (null === $access) !== (null === $refresh) || '' === $access || '' === $refresh) {
+            || (null === $access) !== (null === $refresh) || '' === $access || '' === $refresh
+            || (null !== $pendingRefresh && (!$hasIdentity || null !== $access || null !== $refresh))) {
             throw new AuthException('Invalid saved ChatGPT registration.');
         }
     }
@@ -30,13 +32,13 @@ final readonly class AuthRecord
     /** @return array<string, mixed> */
     public function toArray(): array
     {
-        return get_object_vars($this);
+        return array_replace(get_object_vars($this), ['pendingRefresh' => $this->pendingRefresh?->toArray()]);
     }
 
     /** @return array<string, mixed> */
     public function __debugInfo(): array
     {
-        return ['clientId' => $this->clientId, 'expires' => $this->expires, 'connected' => null !== $this->access];
+        return ['clientId' => $this->clientId, 'expires' => $this->expires, 'connected' => null !== $this->access, 'pendingRefresh' => null !== $this->pendingRefresh];
     }
 
     /** @param array<string, mixed> $data */
@@ -61,7 +63,12 @@ final readonly class AuthRecord
             }
         }
 
-        return new self($data['clientId'], $data['access'], $data['refresh'], $data['expires'], $data['idToken'], $data['issuer'], $data['subject'], $data['scopes'], $data['nonce']);
+        $pending = $data['pendingRefresh'] ?? null;
+        if (null !== $pending && !\is_array($pending)) {
+            throw new AuthException('Invalid pending ChatGPT refresh.');
+        }
+
+        return new self($data['clientId'], $data['access'], $data['refresh'], $data['expires'], $data['idToken'], $data['issuer'], $data['subject'], $data['scopes'], $data['nonce'], null === $pending ? null : PendingRefreshDTO::fromArray($pending));
     }
 
     public function disconnected(): self

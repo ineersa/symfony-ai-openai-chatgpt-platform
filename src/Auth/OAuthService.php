@@ -19,7 +19,7 @@ final readonly class OAuthService
     ) {
     }
 
-    public function beginAuthorization(): AuthorizationRequestDTO
+    public function beginAuthorization(bool $consent = false): AuthorizationRequestDTO
     {
         $hostId = $this->storage->installationId();
         $record = $this->storage->load();
@@ -42,7 +42,10 @@ final readonly class OAuthService
         if (null === $record) {
             $options['agent_name_hint'] = $this->config->appName;
         }
-        if (null !== $record?->access && null !== $record->idToken) {
+        if ($consent) {
+            $options['prompt'] = 'consent';
+        }
+        if ([] !== ($record->scopes ?? []) && null !== $record?->idToken) {
             $options['id_token_hint'] = $record->idToken;
         }
         $url = $provider->getAuthorizationUrl($options);
@@ -116,6 +119,13 @@ final readonly class OAuthService
     public function accessToken(): string
     {
         $record = $this->refreshCredentials(false);
+        if (null !== $record->access && $record->expires <= $this->clock->now()->getTimestamp() + 60) {
+            // Recovery can finish after the staged access expires. Only the now-verified replacement may refresh.
+            $record = $this->refreshCredentials(false);
+        }
+        if (!\in_array(OAuthConfig::DIRECT_SCOPE, $record->scopes, true)) {
+            throw new AuthException('ChatGPT plan usage is disabled. Run auth:chatgpt login --consent to enable it.');
+        }
         if (null === $record->access) {
             throw new AuthException('ChatGPT is disconnected. Run auth:chatgpt login.');
         }
@@ -127,11 +137,15 @@ final readonly class OAuthService
     {
         $unusable = false;
         $updated = $this->storage->update(function (?AuthRecord $record) use ($force, &$unusable): AuthRecord {
+            if (null !== $record?->pendingRefresh) {
+                // Resume the saved rotation before checking expiry or issuing another refresh.
+                return $record;
+            }
+            if (null !== $record?->idToken && [] !== $record->scopes && !\in_array(OAuthConfig::DIRECT_SCOPE, $record->scopes, true)) {
+                throw new AuthException('ChatGPT plan usage is disabled. Run auth:chatgpt login --consent to enable it.');
+            }
             if (null === $record || null === $record->access || null === $record->refresh) {
                 throw new AuthException('ChatGPT is not connected. Run auth:chatgpt login.');
-            }
-            if (!\in_array(OAuthConfig::DIRECT_SCOPE, $record->scopes, true)) {
-                throw new AuthException('ChatGPT credentials lack direct-token permission. Reauthorize with auth:chatgpt login.');
             }
             if (!$force && $record->expires > $this->clock->now()->getTimestamp() + 60) {
                 return $record;
@@ -151,13 +165,36 @@ final readonly class OAuthService
                 return AuthRecord::registration($record->clientId, $record->nonce);
             }
 
-            return $this->tokenRecord($token, $record->clientId, null, $record);
+            $pending = $this->pendingRefresh($token, $record);
+
+            // Remove the consumed grant and commit its replacement before any fallible JWKS fetch.
+            return new AuthRecord($record->clientId, null, null, 0, $record->idToken, $record->issuer, $record->subject, $record->scopes, $record->nonce, $pending);
         });
         if ($unusable) {
             throw new AuthException('ChatGPT refresh credentials are no longer usable. Run auth:chatgpt login.');
         }
 
-        return $updated;
+        if (null === $updated->pendingRefresh) {
+            return $updated;
+        }
+
+        return $this->storage->update(function (?AuthRecord $record): AuthRecord {
+            if (null === $record) {
+                throw new AuthException('ChatGPT registration changed during refresh.');
+            }
+            $pending = $record->pendingRefresh;
+            if (null === $pending) {
+                // Another locked worker may already have verified or disconnected the rotation.
+                return $record;
+            }
+            if ($pending->verifyIdentity) {
+                // OIDC refresh may omit nonce, but a returned nonce must match the original authorization.
+                $identity = $this->idTokenVerifier->verify($pending->idToken, $record->clientId, $record->nonce, false);
+                $this->assertIdentity($record, $identity['issuer'], $identity['subject']);
+            }
+
+            return new AuthRecord($record->clientId, $pending->access, $pending->refresh, $pending->expires, $pending->idToken, $record->issuer, $record->subject, $pending->scopes, $record->nonce);
+        });
     }
 
     public function disconnect(): void
@@ -166,7 +203,8 @@ final readonly class OAuthService
             if (null === $record) {
                 throw new AuthException('No ChatGPT registration is saved.');
             }
-            if (null === $record->refresh) {
+            $refresh = $record->pendingRefresh->refresh ?? $record->refresh;
+            if (null === $refresh) {
                 return $record;
             }
             $discovery = $this->requestJson('GET', OAuthConfig::ISSUER.'/.well-known/openid-configuration');
@@ -178,7 +216,7 @@ final readonly class OAuthService
             }
             try {
                 $response = $this->httpClient->request('POST', $endpoint, [
-                    'body' => ['token' => $record->refresh, 'token_type_hint' => 'refresh_token', 'client_id' => $record->clientId],
+                    'body' => ['token' => $refresh, 'token_type_hint' => 'refresh_token', 'client_id' => $record->clientId],
                     'timeout' => 15, 'max_duration' => 30, 'max_redirects' => 0,
                 ]);
                 if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
@@ -237,37 +275,45 @@ final readonly class OAuthService
     }
 
     /** @param array<string, mixed> $token */
-    private function tokenRecord(#[\SensitiveParameter] array $token, string $clientId, ?string $nonce, ?AuthRecord $previous): AuthRecord
+    private function tokenRecord(#[\SensitiveParameter] array $token, string $clientId, string $nonce, ?AuthRecord $previous): AuthRecord
     {
         $access = $token['access_token'] ?? null;
-        $refresh = \array_key_exists('refresh_token', $token) ? $token['refresh_token'] : (null === $nonce ? $previous?->refresh : null);
-        $idToken = \array_key_exists('id_token', $token) ? $token['id_token'] : (null === $nonce ? $previous?->idToken : null);
+        $refresh = $token['refresh_token'] ?? null;
+        $idToken = $token['id_token'] ?? null;
         $expiry = $token['expires_in'] ?? null;
-        $scope = \array_key_exists('scope', $token) ? $token['scope'] : (null === $nonce ? implode(' ', $previous->scopes ?? []) : null);
-        if (!\is_string($access) || '' === $access || !\is_string($refresh) || '' === $refresh
-            || !\is_string($idToken) || '' === $idToken || !\is_int($expiry) || $expiry <= 0 || $expiry > 31536000
+        $scope = $token['scope'] ?? null;
+        if (!\is_string($idToken) || '' === $idToken || !\is_int($expiry) || $expiry <= 0 || $expiry > 31536000
             || !\is_string($scope) || '' === trim($scope)) {
             throw new AuthException('ChatGPT token response is missing valid credentials, identity or expiry.');
         }
         $scopes = preg_split('/\s+/', trim($scope)) ?: [];
-        if (!\in_array(OAuthConfig::DIRECT_SCOPE, $scopes, true)) {
-            throw new AuthException('ChatGPT grant did not include direct-token permission.');
+        $hasDirectScope = \in_array(OAuthConfig::DIRECT_SCOPE, $scopes, true);
+        if ((null !== $access || null !== $refresh || $hasDirectScope)
+            && (!\is_string($access) || '' === $access || !\is_string($refresh) || '' === $refresh)) {
+            throw new AuthException('ChatGPT token response is missing valid credentials.');
         }
-        $expectedNonce = $nonce ?? $previous?->nonce;
-        if (null === $expectedNonce) {
-            throw new AuthException('No verified authorization nonce is available.');
-        }
-        if (null !== $nonce || isset($token['id_token'])) {
-            // OIDC refresh may omit nonce, but a returned nonce must match the original authorization.
-            $identity = $this->idTokenVerifier->verify($idToken, $clientId, $expectedNonce, null !== $nonce);
-            $this->assertIdentity($previous, $identity['issuer'], $identity['subject']);
-        } elseif (null !== $previous && null !== $previous->issuer && null !== $previous->subject) {
-            $identity = ['issuer' => $previous->issuer, 'subject' => $previous->subject];
-        } else {
-            throw new AuthException('No verified registration is available for refresh.');
+        $identity = $this->idTokenVerifier->verify($idToken, $clientId, $nonce);
+        $this->assertIdentity($previous, $identity['issuer'], $identity['subject']);
+
+        // A verified sign-in without plan permission is retained, but accessToken() rejects it.
+        return new AuthRecord($clientId, $access, $refresh, $this->clock->now()->getTimestamp() + $expiry, $idToken, $identity['issuer'], $identity['subject'], $scopes, $nonce);
+    }
+
+    /** @param array<string, mixed> $token */
+    private function pendingRefresh(#[\SensitiveParameter] array $token, AuthRecord $previous): PendingRefreshDTO
+    {
+        $access = $token['access_token'] ?? null;
+        $refresh = \array_key_exists('refresh_token', $token) ? $token['refresh_token'] : $previous->refresh;
+        $idToken = \array_key_exists('id_token', $token) ? $token['id_token'] : $previous->idToken;
+        $expiry = $token['expires_in'] ?? null;
+        $scope = \array_key_exists('scope', $token) ? $token['scope'] : implode(' ', $previous->scopes);
+        if (!\is_string($access) || '' === $access || !\is_string($refresh) || '' === $refresh
+            || !\is_string($idToken) || '' === $idToken || !\is_int($expiry) || $expiry <= 0 || $expiry > 31536000
+            || !\is_string($scope) || '' === trim($scope)) {
+            throw new AuthException('ChatGPT refresh response is missing valid credentials, identity or expiry.');
         }
 
-        return new AuthRecord($clientId, $access, $refresh, $this->clock->now()->getTimestamp() + $expiry, $idToken, $identity['issuer'], $identity['subject'], $scopes, $expectedNonce);
+        return new PendingRefreshDTO($access, $refresh, $this->clock->now()->getTimestamp() + $expiry, $idToken, preg_split('/\s+/', trim($scope)) ?: [], \array_key_exists('id_token', $token));
     }
 
     private function assertRegistration(?AuthRecord $record, ?string $clientId): void

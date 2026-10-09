@@ -37,19 +37,26 @@ Run the command through the host's console executable:
 ```console
 php bin/console auth:chatgpt login
 php bin/console auth:chatgpt login --manual --no-browser
+php bin/console auth:chatgpt login --consent
 php bin/console auth:chatgpt refresh
 php bin/console auth:chatgpt disconnect
 ```
 
 The browser callback listens on `127.0.0.1:1455/auth/callback` by default. `OAuthConfig` accepts a different port and callback timeout. Manual login requires the complete matching callback URL, including state and the issued client ID on first registration. Never paste a bare code for this flow.
 
-The service uses League OAuth PKCE S256, fresh state and nonce, and the direct-token resource and scope. It verifies ID-token RS256 signatures against OpenAI JWKS, issuer, audience, expiration, nonce and returning account identity. Issued registration IDs survive failed exchange, refresh and disconnect. A pending registration has no authenticated identity or usable tokens. The application name hint is sent only during initial dynamic registration. Reauthorization uses the saved client ID and sends an ID-token hint only while an active grant is saved. Disconnect retains the verified identity but omits the ID-token hint on the next login.
+The service uses League OAuth PKCE S256, fresh state and nonce, and the direct-token resource and scope. It verifies ID-token RS256 signatures against OpenAI JWKS, issuer, audience, expiration, nonce and returning account identity. Issued registration IDs survive failed exchange, refresh and disconnect. A pending registration has no authenticated identity or usable tokens. The application name hint is sent only during initial dynamic registration. Reauthorization uses the saved client ID and sends an ID-token hint while a verified sign-in with granted scopes is saved. Disconnect retains the verified identity but omits the ID-token hint on the next login.
+
+An identity-only grant retains the verified sign-in but cannot authorize inference. To enable plan usage explicitly, run `auth:chatgpt login --consent`. This sets `prompt=consent`, reuses the issued client ID, and requests all scopes with fresh PKCE, state, and nonce. Ordinary login does not force consent. Hosts can request the same flow with `OAuthService::beginAuthorization(consent: true)`.
 
 Refresh re-reads under the storage lock, rotates credentials together, retains identity when refresh omits an ID token, and validates a newly returned identity. Refresh may omit nonce; a supplied nonce must match the saved authorization. Token operations have a separate 30-second duration budget. Remote disconnect discovers the revocation endpoint. A revocation failure leaves local credentials intact and raises an error rather than reporting success.
 
+Before verifying a rotated grant, refresh persists `AuthRecord::pendingRefresh` in protected storage and removes the consumed access and refresh tokens. `PendingRefreshDTO` contains only the replacement credentials, fixed expiry, scopes, and verification flag. A failed JWKS fetch leaves the replacement pending. Retry, restart, and other workers resume verification under the storage lock without repeating refresh. Pending access and identity never authorize inference. Disconnect revokes the pending replacement when present.
+
+`IdTokenVerifier` caches public signing keys for one hour using Symfony Cache. An unknown key ID triggers one new fetch. The optional second constructor argument accepts a Symfony `CacheInterface`, allowing a host-managed shared cache; the default is a process-local `ArrayAdapter`. No host dependency-injection change is required.
+
 Confirmed unusable refresh-token errors clear access, refresh, and ID tokens under the same storage lock before raising `AuthException`. The issued client ID remains saved for the next login. Temporary failures, `invalid_client`, and unknown errors preserve the grant.
 
-`AuthStorageInterface` exposes `installationId()`, `load()` and atomic `update(callable)`. Custom storage must provide the same cross-worker read/update guarantees. `AuthRecord` contains registration, identity, scopes, nonce and nullable grant credentials. `load() !== null` does not imply a connected account; pending and disconnected registrations have `access === null`.
+`AuthStorageInterface` exposes `installationId()`, `load()` and atomic `update(callable)`. Custom storage must provide the same cross-worker read/update guarantees and preserve the optional `pendingRefresh` payload. `AuthRecord` contains registration, identity, scopes, nonce and nullable grant credentials. `load() !== null` and non-null access do not establish plan permission. Pending and disconnected registrations have `access === null`; inference also requires the direct-token scope.
 
 ## Configure inference
 

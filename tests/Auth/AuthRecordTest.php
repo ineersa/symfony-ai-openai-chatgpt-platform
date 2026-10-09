@@ -16,7 +16,7 @@ final class AuthRecordTest extends TestCase
         $record = AuthFixture::record();
         self::assertEquals($record, AuthRecord::fromArray($record->toArray()));
         self::assertSame('nonce', $record->disconnected()->nonce);
-        self::assertSame(['clientId' => 'issued-client', 'expires' => 2000000000, 'connected' => true], $record->__debugInfo());
+        self::assertSame(['clientId' => 'issued-client', 'expires' => 2000000000, 'connected' => true, 'pendingRefresh' => false], $record->__debugInfo());
     }
 
     public function testMalformedStoredScopeFailsClosed(): void

@@ -8,7 +8,11 @@ use Firebase\JWT\JWT;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\AuthException;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\AuthFileStore;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\AuthRecord;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\AuthStorageInterface;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\IdTokenVerifier;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\OAuthConfig;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\PendingRefreshDTO;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\AuthFixture;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\InMemoryAuthStorage;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\IsolatedTestCase;
@@ -19,6 +23,328 @@ use Symfony\Component\Lock\Store\FlockStore;
 
 final class OAuthServiceTest extends IsolatedTestCase
 {
+    #[DataProvider('verificationRetries')]
+    public function testRotatedRefreshSurvivesJwksFailureAndResumesWithoutAnotherRefresh(bool $restart): void
+    {
+        $path = $this->directory.'/rotation.json';
+        $locks = new LockFactory(new FlockStore($this->directory));
+        $store = new AuthFileStore($path, $locks);
+        $record = AuthFixture::record();
+        $store->update(static fn () => $record);
+        $rotated = AuthFixture::token('nonce');
+        $rotated['id_token'] = AuthFixture::idToken(kid: 'rotated-key');
+        $refreshes = 0;
+        $keyFetches = 0;
+        $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$refreshes, &$keyFetches, $rotated): MockResponse {
+            if ('POST' === $method) {
+                ++$refreshes;
+                parse_str($options['body'], $body);
+                self::assertSame('test-refresh', $body['refresh_token']);
+
+                return new MockResponse(json_encode($rotated, \JSON_THROW_ON_ERROR));
+            }
+            ++$keyFetches;
+            self::assertStringEndsWith('/jwks.json', $url);
+            if (2 === $keyFetches) {
+                return new MockResponse('{"error":"secret-marker"}', ['http_code' => 503]);
+            }
+
+            return new MockResponse(json_encode(AuthFixture::jwks(1 === $keyFetches ? 'test-key' : 'rotated-key'), \JSON_THROW_ON_ERROR));
+        });
+        $verifier = new IdTokenVerifier($http);
+        $verifier->verify($record->idToken ?? '', $record->clientId, $record->nonce);
+        $service = AuthFixture::service($store, $http, $verifier);
+        try {
+            $service->refreshCredentials();
+            self::fail('Expected temporary verification failure after successful rotation.');
+        } catch (AuthException $error) {
+            self::assertNull($error->getPrevious());
+            self::assertStringNotContainsString('secret-marker', $error->getMessage());
+        }
+        $pending = (new AuthFileStore($path, $locks))->load();
+        self::assertNotNull($pending);
+        self::assertNull($pending->access);
+        self::assertNull($pending->refresh);
+        self::assertSame($record->idToken, $pending->idToken);
+        self::assertNotNull($pending->pendingRefresh);
+        self::assertSame('new-refresh', $pending->pendingRefresh->refresh);
+        self::assertSame(1900003600, $pending->pendingRefresh->expires);
+        self::assertSame(0600, fileperms($path) & 0777);
+        if ($restart) {
+            $service = AuthFixture::service(new AuthFileStore($path, $locks), $http);
+        }
+        self::assertSame('new-access', $service->accessToken());
+        $verified = $store->load();
+        self::assertNotNull($verified);
+        self::assertNull($verified->pendingRefresh);
+        self::assertSame($rotated['id_token'], $verified->idToken);
+        self::assertSame('new-refresh', $verified->refresh);
+        self::assertSame(1900003600, $verified->expires);
+        self::assertSame(1, $refreshes);
+        self::assertSame(3, $keyFetches);
+    }
+
+    /** @return iterable<string, array{bool}> */
+    public static function verificationRetries(): iterable
+    {
+        yield 'same worker' => [false];
+        yield 'restart' => [true];
+    }
+
+    public function testExpiredPendingAccessRefreshesReplacementOnlyAfterIdentityVerification(): void
+    {
+        $identity = AuthFixture::record();
+        $pending = new PendingRefreshDTO('expired-access', 'rotated-refresh', 1, AuthFixture::idToken(), $identity->scopes, true);
+        $storage = new InMemoryAuthStorage(new AuthRecord($identity->clientId, null, null, 0, $identity->idToken, $identity->issuer, $identity->subject, $identity->scopes, $identity->nonce, $pending));
+        $methods = [];
+        $http = new MockHttpClient(static function (string $method, string $url, array $options) use ($storage, &$methods): MockResponse {
+            $methods[] = $method;
+            if ('GET' === $method) {
+                return new MockResponse(json_encode(AuthFixture::jwks(), \JSON_THROW_ON_ERROR));
+            }
+            self::assertNull($storage->load()?->pendingRefresh);
+            parse_str($options['body'], $body);
+            self::assertSame('rotated-refresh', $body['refresh_token']);
+
+            return new MockResponse('{"access_token":"fresh-access","refresh_token":"fresh-refresh","expires_in":3600}');
+        });
+        self::assertSame('fresh-access', AuthFixture::service($storage, $http)->accessToken());
+        self::assertSame(['GET', 'POST'], $methods);
+    }
+
+    public function testDisconnectRevokesPendingReplacementAndRetainsIssuedClient(): void
+    {
+        $identity = AuthFixture::record();
+        $pending = new PendingRefreshDTO('pending-access', 'pending-refresh', 2000000000, AuthFixture::idToken('wrong-nonce'), $identity->scopes, true);
+        $storage = new InMemoryAuthStorage(new AuthRecord($identity->clientId, null, null, 0, $identity->idToken, $identity->issuer, $identity->subject, $identity->scopes, $identity->nonce, $pending));
+        $http = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
+            if ('GET' === $method) {
+                return new MockResponse('{"issuer":"https://auth.openai.com","revocation_endpoint":"https://auth.openai.com/api/accounts/oauth/revoke"}');
+            }
+            parse_str($options['body'], $body);
+            self::assertSame('pending-refresh', $body['token']);
+
+            return new MockResponse('');
+        });
+        AuthFixture::service($storage, $http)->disconnect();
+        self::assertNull($storage->record?->pendingRefresh);
+        self::assertNull($storage->record?->access);
+        self::assertSame('issued-client', $storage->record?->clientId);
+        self::assertSame(2, $http->getRequestsCount());
+    }
+
+    public function testOtherLockedWorkerCanActivatePendingRotationBeforeFirstWorkerResumes(): void
+    {
+        $path = $this->directory.'/interleaved.json';
+        $locks = new LockFactory(new FlockStore($this->directory));
+        $first = new AuthFileStore($path, $locks);
+        $record = AuthFixture::record(1);
+        $first->update(static fn () => $record);
+        $http = new MockHttpClient([
+            new MockResponse(json_encode(AuthFixture::token('nonce'), \JSON_THROW_ON_ERROR)),
+            new MockResponse(json_encode(AuthFixture::jwks(), \JSON_THROW_ON_ERROR)),
+        ]);
+        $second = AuthFixture::service(new AuthFileStore($path, $locks), $http);
+        $barrier = new class($first, static function () use ($second): void {
+            self::assertSame('new-access', $second->accessToken());
+        }) implements AuthStorageInterface {
+            private bool $entered = false;
+
+            public function __construct(private readonly AuthStorageInterface $store, private readonly \Closure $afterPending)
+            {
+            }
+
+            public function installationId(): string
+            {
+                return $this->store->installationId();
+            }
+
+            public function load(): ?AuthRecord
+            {
+                return $this->store->load();
+            }
+
+            public function update(callable $update): AuthRecord
+            {
+                $saved = $this->store->update($update);
+                if (!$this->entered && null !== $saved->pendingRefresh) {
+                    $this->entered = true;
+                    // Deterministic barrier after the atomic pending write and lock release, before verification.
+                    ($this->afterPending)();
+                }
+
+                return $saved;
+            }
+        };
+        self::assertSame('new-access', AuthFixture::service($barrier, $http)->accessToken());
+        self::assertSame(2, $http->getRequestsCount());
+        self::assertNull($first->load()?->pendingRefresh);
+    }
+
+    /** @param array<string, mixed> $claims */
+    #[DataProvider('invalidPendingIdentities')]
+    public function testUnverifiedPendingRefreshCannotActivateOrReuseConsumedGrant(array $claims, string $kid, bool $badSignature): void
+    {
+        $record = AuthFixture::record();
+        $storage = new InMemoryAuthStorage($record);
+        $replacement = AuthFixture::token('nonce');
+        $idToken = AuthFixture::idToken(overrides: $claims, kid: $kid);
+        if ($badSignature) {
+            [$header, $body] = explode('.', $idToken);
+            $idToken = $header.'.'.$body.'.secret-marker';
+        }
+        $replacement['id_token'] = $idToken;
+        $refreshes = 0;
+        $http = new MockHttpClient(static function (string $method) use ($replacement, &$refreshes): MockResponse {
+            if ('POST' === $method) {
+                ++$refreshes;
+            }
+
+            return new MockResponse(json_encode('POST' === $method ? $replacement : AuthFixture::jwks(), \JSON_THROW_ON_ERROR));
+        });
+        $service = AuthFixture::service($storage, $http);
+        foreach ([true, false] as $force) {
+            try {
+                $service->refreshCredentials($force);
+                self::fail('Expected identity verification failure.');
+            } catch (AuthException $error) {
+                self::assertNull($error->getPrevious());
+                self::assertStringNotContainsString('secret-marker', $error->getMessage());
+            }
+        }
+        self::assertNull($storage->record?->access);
+        self::assertSame($record->idToken, $storage->record?->idToken);
+        self::assertSame($idToken, $storage->record?->pendingRefresh?->idToken);
+        self::assertSame('new-refresh', $storage->record->pendingRefresh->refresh);
+        // Repeated verification uses only GET; POST is the single consumed refresh request.
+        self::assertSame(1, $refreshes);
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, string, bool}> */
+    public static function invalidPendingIdentities(): iterable
+    {
+        yield 'audience' => [['aud' => 'wrong-client'], 'test-key', false];
+        yield 'account binding' => [['sub' => 'wrong-account'], 'test-key', false];
+        yield 'unknown signing key' => [[], 'unknown-key', false];
+        yield 'bad signature' => [[], 'test-key', true];
+    }
+
+    #[DataProvider('identityOnlyGrants')]
+    public function testIdentityOnlySignInCanExplicitlyEnablePlanWithSameRegistration(bool $hasCredentials): void
+    {
+        $nonce = '';
+        $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$nonce, $hasCredentials): MockResponse {
+            if (str_ends_with($url, '/jwks.json')) {
+                return new MockResponse(json_encode(AuthFixture::jwks(), \JSON_THROW_ON_ERROR));
+            }
+            parse_str($options['body'], $body);
+            $token = AuthFixture::token($nonce);
+            if ('new-code' !== $body['code']) {
+                $token['scope'] = 'openid profile email';
+                if (!$hasCredentials) {
+                    unset($token['access_token'], $token['refresh_token']);
+                }
+            }
+
+            return new MockResponse(json_encode($token, \JSON_THROW_ON_ERROR));
+        });
+        $storage = new InMemoryAuthStorage();
+        $service = AuthFixture::service($storage, $http);
+        $ordinary = $service->beginAuthorization();
+        parse_str((string) parse_url($ordinary->url, \PHP_URL_QUERY), $query);
+        self::assertArrayNotHasKey('prompt', $query);
+        self::assertArrayNotHasKey('force_reconsent', $query);
+        $nonce = $ordinary->nonce;
+        $identity = $service->completeAuthorization($ordinary, ['state' => $ordinary->state, 'client_id' => 'issued-client', 'code' => 'code']);
+        self::assertSame('account-one', $identity->subject);
+        self::assertNotNull($identity->idToken);
+        self::assertSame(['openid', 'profile', 'email'], $identity->scopes);
+        $requests = $http->getRequestsCount();
+        try {
+            $service->accessToken();
+            self::fail('Identity-only grants must not enable inference.');
+        } catch (AuthException $error) {
+            self::assertStringContainsString('login --consent', $error->getMessage());
+            self::assertSame($identity, $storage->load());
+            self::assertSame($requests, $http->getRequestsCount());
+        }
+        $consent = $service->beginAuthorization(true);
+        parse_str((string) parse_url($consent->url, \PHP_URL_QUERY), $enabled);
+        self::assertSame('consent', $enabled['prompt']);
+        self::assertArrayNotHasKey('force_reconsent', $enabled);
+        self::assertSame('issued-client', $enabled['client_id']);
+        self::assertSame(OAuthConfig::SCOPE, $enabled['scope']);
+        self::assertSame($query['ext_agent_host_id'], $enabled['ext_agent_host_id']);
+        self::assertSame('S256', $enabled['code_challenge_method']);
+        self::assertSame($identity->idToken, $enabled['id_token_hint']);
+        self::assertNotSame($ordinary->nonce, $consent->nonce);
+        self::assertNotSame($ordinary->state, $consent->state);
+        self::assertNotSame($ordinary->verifier, $consent->verifier);
+        $nonce = $consent->nonce;
+        $authorized = $service->completeAuthorization($consent, ['state' => $consent->state, 'code' => 'new-code']);
+        self::assertSame('issued-client', $authorized->clientId);
+        self::assertSame('account-one', $authorized->subject);
+        self::assertContains(OAuthConfig::DIRECT_SCOPE, $authorized->scopes);
+        self::assertSame('new-access', $service->accessToken());
+        parse_str((string) parse_url($service->beginAuthorization()->url, \PHP_URL_QUERY), $normal);
+        self::assertArrayNotHasKey('prompt', $normal);
+        self::assertArrayNotHasKey('force_reconsent', $normal);
+    }
+
+    /** @return iterable<string, array{bool}> */
+    public static function identityOnlyGrants(): iterable
+    {
+        yield 'with identity credentials' => [true];
+        yield 'ID token only' => [false];
+    }
+
+    #[DataProvider('invalidIdentityOnlyClaims')]
+    public function testIdentityOnlyLoginStillValidatesNonceAndAudience(string $claim, string $value): void
+    {
+        $nonce = '';
+        $http = new MockHttpClient(static function (string $method, string $url) use (&$nonce, $claim, $value): MockResponse {
+            $token = AuthFixture::token($nonce);
+            $token['scope'] = 'openid';
+            $token['id_token'] = AuthFixture::idToken($nonce, [$claim => $value]);
+
+            return new MockResponse(json_encode(str_ends_with($url, '/jwks.json') ? AuthFixture::jwks() : $token, \JSON_THROW_ON_ERROR));
+        });
+        $storage = new InMemoryAuthStorage();
+        $service = AuthFixture::service($storage, $http);
+        $request = $service->beginAuthorization();
+        $nonce = $request->nonce;
+        try {
+            $service->completeAuthorization($request, ['state' => $request->state, 'client_id' => 'issued-client', 'code' => 'code']);
+            self::fail('Expected identity-only claim rejection.');
+        } catch (AuthException) {
+            self::assertNull($storage->record?->idToken);
+            self::assertNull($storage->record?->access);
+            self::assertSame('issued-client', $storage->record?->clientId);
+        }
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function invalidIdentityOnlyClaims(): iterable
+    {
+        yield 'nonce' => ['nonce', 'wrong-nonce'];
+        yield 'audience' => ['aud', 'wrong-client'];
+    }
+
+    public function testRefreshRemovingDirectScopeDisablesInferenceWithoutDiscardingVerifiedSignIn(): void
+    {
+        $storage = new InMemoryAuthStorage(AuthFixture::record(1));
+        $http = new MockHttpClient(new MockResponse('{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600,"scope":"openid"}'));
+        try {
+            AuthFixture::service($storage, $http)->accessToken();
+            self::fail('Expected disabled plan usage.');
+        } catch (AuthException $error) {
+            self::assertStringContainsString('login --consent', $error->getMessage());
+            self::assertSame('account-one', $storage->record?->subject);
+            self::assertSame('new-refresh', $storage->record->refresh);
+            self::assertSame(['openid'], $storage->record->scopes);
+        }
+    }
+
     /** @param array<string, mixed> $body */
     #[DataProvider('refreshFailures')]
     public function testRefreshFailurePersistsOnlyConfirmedUnusableTokens(array $body, int $status, bool $terminal): void
@@ -183,7 +509,7 @@ final class OAuthServiceTest extends IsolatedTestCase
         $service->completeAuthorization($request, ['state' => $request->state, 'code' => 'code']);
     }
 
-    public function testMissingScopeCannotSaveCredentials(): void
+    public function testIdentityOnlyGrantStillRequiresVerifiedIdentity(): void
     {
         $storage = new InMemoryAuthStorage();
         $client = new MockHttpClient(new MockResponse('{"access_token":"a","refresh_token":"r","expires_in":3600,"id_token":"not-verified","scope":"openid"}'));
@@ -191,9 +517,9 @@ final class OAuthServiceTest extends IsolatedTestCase
         $request = $service->beginAuthorization();
         try {
             $service->completeAuthorization($request, ['state' => $request->state, 'code' => 'code', 'client_id' => 'issued-client']);
-            self::fail('Expected missing direct-token permission.');
+            self::fail('Expected unverified identity rejection.');
         } catch (AuthException $exception) {
-            self::assertStringContainsString('direct-token permission', $exception->getMessage());
+            self::assertStringContainsString('signature verification failed', $exception->getMessage());
             self::assertNotNull($storage->record);
             self::assertSame('issued-client', $storage->record->clientId);
             self::assertNull($storage->record->access);
@@ -271,7 +597,6 @@ final class OAuthServiceTest extends IsolatedTestCase
         yield 'list' => ['[]', 200];
         yield 'missing access' => ['{"expires_in":3600}', 200];
         yield 'negative expiry' => ['{"access_token":"secret-marker","expires_in":-1}', 200];
-        yield 'scope removed' => ['{"access_token":"secret-marker","expires_in":3600,"scope":"openid"}', 200];
         yield 'explicit null identity' => ['{"access_token":"secret-marker","expires_in":3600,"id_token":null}', 200];
         yield 'explicit null refresh token' => ['{"access_token":"secret-marker","expires_in":3600,"refresh_token":null}', 200];
         yield 'explicit null scope' => ['{"access_token":"secret-marker","expires_in":3600,"scope":null}', 200];
@@ -352,7 +677,7 @@ final class OAuthServiceTest extends IsolatedTestCase
         self::assertSame('test-refresh', $updated->refresh);
     }
 
-    public function testRefreshRejectsChangedNonceAndDoesNotOverwriteSavedCredentials(): void
+    public function testRefreshRejectsChangedNonceAndRetainsOnlyPendingReplacement(): void
     {
         $record = AuthFixture::record(1);
         $storage = new InMemoryAuthStorage($record);
@@ -362,7 +687,11 @@ final class OAuthServiceTest extends IsolatedTestCase
             self::fail('Expected changed nonce rejection.');
         } catch (AuthException $exception) {
             self::assertStringContainsString('identity claims are invalid', $exception->getMessage());
-            self::assertSame($record, $storage->record);
+            self::assertNull($storage->record?->access);
+            self::assertNull($storage->record?->refresh);
+            self::assertSame($record->idToken, $storage->record?->idToken);
+            self::assertSame('new-access', $storage->record?->pendingRefresh?->access);
+            self::assertSame('test-refresh', $storage->record->pendingRefresh->refresh);
         }
     }
 }

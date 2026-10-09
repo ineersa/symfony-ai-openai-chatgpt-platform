@@ -9,11 +9,23 @@ use PHPUnit\Framework\TestCase;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\AuthException;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\IdTokenVerifier;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\AuthFixture;
+use Symfony\Component\Cache\Adapter\ArrayAdapter;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class IdTokenVerifierTest extends TestCase
 {
+    public function testIssuerSigningKeysUseInjectedSymfonyCacheAcrossVerifierInstances(): void
+    {
+        $cache = new ArrayAdapter();
+        $http = new MockHttpClient(new MockResponse(json_encode(AuthFixture::jwks(), \JSON_THROW_ON_ERROR)));
+        $first = new IdTokenVerifier($http, $cache);
+        $first->verify(AuthFixture::idToken(), 'issued-client', 'nonce');
+        $first->verify(AuthFixture::idToken(), 'issued-client', 'nonce');
+        (new IdTokenVerifier($http, $cache))->verify(AuthFixture::idToken(), 'issued-client', 'nonce');
+        self::assertSame(1, $http->getRequestsCount());
+    }
+
     public function testValidatesSignatureAndRequiredClaims(): void
     {
         $verifier = $this->verifier();

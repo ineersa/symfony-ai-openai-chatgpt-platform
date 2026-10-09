@@ -22,7 +22,11 @@ final readonly class AuthCommand
         #[Argument(description: 'login, refresh or disconnect')] string $action = 'login',
         #[Option(description: 'Do not launch a browser')] bool $noBrowser = false,
         #[Option(description: 'Paste the full callback URL instead of listening on loopback')] bool $manual = false,
+        #[Option(description: 'Explicitly request consent to enable ChatGPT plan usage during login')] bool $consent = false,
     ): int {
+        if ($consent && 'login' !== $action) {
+            throw new \InvalidArgumentException('Use --consent with login only.');
+        }
         if ('refresh' === $action) {
             $this->service->refreshCredentials();
             $io->success('ChatGPT credentials refreshed.');
@@ -38,7 +42,7 @@ final readonly class AuthCommand
         if ('login' !== $action) {
             throw new \InvalidArgumentException('Choose login, refresh or disconnect.');
         }
-        $request = $this->service->beginAuthorization();
+        $request = $this->service->beginAuthorization($consent);
         $io->writeln('Open this authorization URL:');
         $io->writeln($request->url);
         $callback = null;
@@ -54,11 +58,15 @@ final readonly class AuthCommand
             if (!\is_string($url) || '' === trim($url)) {
                 throw new AuthException('A complete callback URL is required.');
             }
-            $this->service->completeManualAuthorization($request, $url);
+            $record = $this->service->completeManualAuthorization($request, $url);
         } else {
-            $this->service->completeAuthorization($request, $callback);
+            $record = $this->service->completeAuthorization($request, $callback);
         }
-        $io->success('ChatGPT connected. Manage plan usage at '.OAuthConfig::USAGE_URL);
+        if (\in_array(OAuthConfig::DIRECT_SCOPE, $record->scopes, true)) {
+            $io->success('ChatGPT connected. Manage plan usage at '.OAuthConfig::USAGE_URL);
+        } else {
+            $io->warning('ChatGPT sign-in saved; plan usage is disabled. Run auth:chatgpt login --consent to enable it.');
+        }
 
         return Command::SUCCESS;
     }

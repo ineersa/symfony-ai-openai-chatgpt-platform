@@ -31,20 +31,20 @@ final class AuthFixture
     }
 
     /** @return array<string, mixed> */
-    public static function jwks(): array
+    public static function jwks(string $kid = 'test-key'): array
     {
         $details = openssl_pkey_get_details(self::key());
         if (false === $details) {
             throw new \RuntimeException('Test RSA public key extraction failed.');
         }
 
-        return ['keys' => [['kty' => 'RSA', 'alg' => 'RS256', 'use' => 'sig', 'kid' => 'test-key', 'n' => JWT::urlsafeB64Encode($details['rsa']['n']), 'e' => JWT::urlsafeB64Encode($details['rsa']['e'])]]];
+        return ['keys' => [['kty' => 'RSA', 'alg' => 'RS256', 'use' => 'sig', 'kid' => $kid, 'n' => JWT::urlsafeB64Encode($details['rsa']['n']), 'e' => JWT::urlsafeB64Encode($details['rsa']['e'])]]];
     }
 
     /** @param array<string, mixed> $overrides */
-    public static function idToken(string $nonce = 'nonce', array $overrides = []): string
+    public static function idToken(string $nonce = 'nonce', array $overrides = [], string $kid = 'test-key'): string
     {
-        return JWT::encode(array_replace(['iss' => OAuthConfig::ISSUER, 'sub' => 'account-one', 'aud' => 'issued-client', 'exp' => time() + 3600, 'nonce' => $nonce], $overrides), self::key(), 'RS256', 'test-key');
+        return JWT::encode(array_replace(['iss' => OAuthConfig::ISSUER, 'sub' => 'account-one', 'aud' => 'issued-client', 'exp' => time() + 3600, 'nonce' => $nonce], $overrides), self::key(), 'RS256', $kid);
     }
 
     public static function record(int $expires = 2000000000): AuthRecord
@@ -58,9 +58,9 @@ final class AuthFixture
         return ['access_token' => 'new-access', 'refresh_token' => 'new-refresh', 'expires_in' => 3600, 'id_token' => self::idToken($nonce), 'scope' => OAuthConfig::SCOPE];
     }
 
-    public static function service(AuthStorageInterface $storage, HttpClientInterface $httpClient): OAuthService
+    public static function service(AuthStorageInterface $storage, HttpClientInterface $httpClient, ?IdTokenVerifier $verifier = null): OAuthService
     {
-        return new OAuthService($storage, $httpClient, new IdTokenVerifier($httpClient), new OAuthConfig('Test app'), new MockClock('@1900000000'));
+        return new OAuthService($storage, $httpClient, $verifier ?? new IdTokenVerifier($httpClient), new OAuthConfig('Test app'), new MockClock('@1900000000'));
     }
 
     /** @param list<array<string, mixed>> $events */
