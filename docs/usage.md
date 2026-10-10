@@ -57,7 +57,7 @@ Supply Symfony AI function tools through invocation options. The adapter places 
 
 Your application executes completed tool calls and appends their results to history. Do not execute a call until its arguments are complete. Interrupted streams raise an error rather than turning partial arguments into a dispatchable call.
 
-Function schemas default to `strict: false`; set strictness explicitly when needed. Hosted tools and tool-search items are rejected. See [request limits](reference.md#request-limits) for supported history types.
+Function schemas default to `strict: false`. Hosted tools and tool-search items are rejected. See [request limits](reference.md#request-limits) for supported history types.
 
 ## Cancel a stream
 
