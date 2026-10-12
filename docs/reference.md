@@ -98,6 +98,8 @@ The request body retains these fields: `model`, `input`, `instructions`, `reason
 
 Pass `prompt_cache_key` through invocation options. Direct `ModelClient::request()` callers may also supply it in the payload; payload fields take precedence over options. The effective final-body key supplies both `session-id` and `x-client-request-id`. Missing, empty, or non-string effective keys raise `InvalidArgumentException` before HTTP. The client does not generate a replacement key.
 
+The `session-id` header carries the conversation key for cache affinity. Keep that key stable when resuming a conversation; do not generate a new key for each request. The package sends the same value in the body and both headers automatically. This requirement follows observed ChatGPT OAuth routing behavior and does not guarantee a cache hit. See [conversation continuity](usage.md#continue-a-conversation).
+
 Structured output and invalid UTF-8 substitution use Symfony AI OpenResponses facilities. See OpenAI's [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) for service restrictions beyond the adapter's checks.
 
 ## Errors

@@ -55,6 +55,8 @@ For durable sessions, keep native message boundaries, phases, encrypted reasonin
 
 Reuse the same `prompt_cache_key` for all requests and retries in the conversation. Persist the key with the history when continuing across processes. The key is mandatory even when your application does not explicitly manage prompt caching; it also supplies the `session-id` and `x-client-request-id` routing headers. It does not guarantee a cache hit.
 
+The package sends `session-id` to preserve conversation-level cache affinity. In measurements on the ChatGPT OAuth Responses endpoint, the body key alone produced less cache reuse than the same key sent with `session-id`. This is observed routing behavior, not a documented OpenAI cache guarantee. Set the conversation key through invocation options; the package derives the headers, so you do not configure a separate session ID.
+
 Keep the request-level reasoning baseline fixed if you use [ordered effort changes](replay.md#change-reasoning-effort).
 
 ## Execute local tools
