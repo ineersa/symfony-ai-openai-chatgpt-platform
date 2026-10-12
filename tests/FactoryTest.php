@@ -28,6 +28,28 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class FactoryTest extends TestCase
 {
+    public function testDocumentedFirstInvocationsSupplyConversationKeys(): void
+    {
+        foreach (['README.md', 'docs/usage.md'] as $document) {
+            $source = file_get_contents(\dirname(__DIR__).'/'.$document);
+            self::assertIsString($source);
+            self::assertSame(1, preg_match('/\$conversationKey = .*?\$result = \$provider->invoke\(.*?\n\);/s', $source, $matches));
+            $http = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
+                $body = AuthFixture::decodeBody($options);
+                self::assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $body['prompt_cache_key']);
+                self::assertSame(['session-id: '.$body['prompt_cache_key']], $options['normalized_headers']['session-id']);
+
+                return new MockResponse(AuthFixture::sse([['type' => 'response.output_text.delta', 'delta' => 'OK'], ['type' => 'response.completed', 'response' => ['output' => []]]]));
+            });
+            $provider = Factory::createProvider(AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http), $http, new TestModelCatalog());
+            $modelName = 'test-model';
+            // Execute the actual documentation invocation against the same mocked provider
+            // used by framework integration tests, without running its login/bootstrap code.
+            $result = eval('use Symfony\\AI\\Platform\\Bridge\\OpenResponses\\ResponsesModel; use Symfony\\AI\\Platform\\Capability; use Symfony\\AI\\Platform\\Message\\Message; use Symfony\\AI\\Platform\\Message\\MessageBag; '.$matches[0].' return $result;');
+            self::assertSame('OK', implode('', iterator_to_array($result->asTextStream())));
+        }
+    }
+
     public function testNativeMessagePhasesBoundariesAndControlsRoundTripThroughFactoryAfterSerialization(): void
     {
         $comment = ['type' => 'message', 'id' => 'msg_comment', 'role' => 'assistant', 'name' => 'assistant', 'phase' => 'commentary', 'content' => [['type' => 'output_text', 'text' => 'Checking']]];

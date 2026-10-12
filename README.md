@@ -57,15 +57,19 @@ if ('ask' !== ($argv[1] ?? null)) {
 
 $modelName = $argv[2] ?? throw new InvalidArgumentException('Usage: php chatgpt.php ask MODEL');
 $provider = Factory::createProvider($oauth, $http, new ModelCatalog());
+$conversationKey = bin2hex(random_bytes(16));
 $result = $provider->invoke(
 	new ResponsesModel($modelName, [Capability::INPUT_MESSAGES, Capability::OUTPUT_TEXT]),
 	new MessageBag(Message::ofUser('Hello')),
+	['prompt_cache_key' => $conversationKey],
 );
 foreach ($result->asTextStream() as $text) {
 	echo $text;
 }
 echo PHP_EOL;
 ```
+
+Every request requires a non-empty string `prompt_cache_key`. Generate it once per conversation and reuse it for every request, including retries. This example starts a new conversation on each `ask` command. Persist the key with the history when continuing a conversation across processes.
 
 Log in, then stream a reply. Replace `YOUR_MODEL` with a model available to your account:
 

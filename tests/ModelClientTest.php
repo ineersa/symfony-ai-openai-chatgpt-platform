@@ -239,12 +239,49 @@ final class ModelClientTest extends TestCase
         return AuthFixture::decodeBody($options);
     }
 
-    public function testRejectsMissingPromptCacheKeyBeforeHttpRequest(): void
+    /** @param array<string, mixed> $options */
+    #[DataProvider('payloadCacheKeyOptions')]
+    public function testPayloadCacheKeyControlsBodyAndRoutingHeaders(array $options): void
+    {
+        $http = new MockHttpClient(static function (string $method, string $url, array $httpOptions): MockResponse {
+            self::assertSame('payload-key', self::decodeBody($httpOptions)['prompt_cache_key']);
+            self::assertSame(['session-id: payload-key'], $httpOptions['normalized_headers']['session-id']);
+            self::assertSame(['x-client-request-id: payload-key'], $httpOptions['normalized_headers']['x-client-request-id']);
+
+            return new MockResponse('');
+        });
+        $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
+        $client->request(new ResponsesModel('test-model'), ['input' => [], 'prompt_cache_key' => 'payload-key'], $options)->getObject()->cancel();
+    }
+
+    /** @return iterable<string, array{array<string, mixed>}> */
+    public static function payloadCacheKeyOptions(): iterable
+    {
+        yield 'payload only' => [[]];
+        yield 'conflicting option' => [['prompt_cache_key' => 'option-key']];
+        yield 'invalid option overridden' => [['prompt_cache_key' => null]];
+    }
+
+    /** @param array<string, mixed> $payload
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('invalidCacheKeys')]
+    public function testRejectsInvalidEffectivePromptCacheKeyBeforeHttpRequest(array $payload, array $options): void
     {
         $http = new MockHttpClient(static function (): never { self::fail('Requests without prompt_cache_key must not reach HTTP.'); });
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('prompt_cache_key');
-        $client->request(new ResponsesModel('test-model'), ['input' => []]);
+        $client->request(new ResponsesModel('test-model'), ['input' => [], ...$payload], $options);
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, array<string, mixed>}> */
+    public static function invalidCacheKeys(): iterable
+    {
+        yield 'missing' => [[], []];
+        foreach ([null, '', 1, false, []] as $index => $invalid) {
+            yield 'invalid option '.$index => [[], ['prompt_cache_key' => $invalid]];
+            yield 'invalid payload overrides valid option '.$index => [['prompt_cache_key' => $invalid], ['prompt_cache_key' => 'valid-option']];
+        }
     }
 }

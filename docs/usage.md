@@ -28,13 +28,17 @@ Registration does not establish account entitlement. Consult OpenAI's [models an
 
 ## Send a message
 
+Every invocation requires a non-empty string `prompt_cache_key`. Generate the key once when starting a conversation, not before each request:
+
 ```php
 use Symfony\AI\Platform\Message\Message;
 use Symfony\AI\Platform\Message\MessageBag;
 
+$conversationKey = bin2hex(random_bytes(16));
 $result = $provider->invoke(
 	$modelName,
 	new MessageBag(Message::ofUser('Hello')),
+	['prompt_cache_key' => $conversationKey],
 );
 foreach ($result->asTextStream() as $text) {
 	echo $text;
@@ -49,7 +53,9 @@ Every HTTP request sends the full history. Include earlier assistant output and 
 
 For durable sessions, keep native message boundaries, phases, encrypted reasoning signatures, and tool identities. Do not reduce an assistant turn to its concatenated visible text. See [history and reasoning](replay.md) before implementing persistence.
 
-Pass a stable `prompt_cache_key` for the conversation when your application uses prompt caching. Keep the request-level reasoning baseline fixed if you use [ordered effort changes](replay.md#change-reasoning-effort). Neither setting guarantees a cache hit.
+Reuse the same `prompt_cache_key` for all requests and retries in the conversation. Persist the key with the history when continuing across processes. The key is mandatory even when your application does not explicitly manage prompt caching; it also supplies the `session-id` and `x-client-request-id` routing headers. It does not guarantee a cache hit.
+
+Keep the request-level reasoning baseline fixed if you use [ordered effort changes](replay.md#change-reasoning-effort).
 
 ## Execute local tools
 

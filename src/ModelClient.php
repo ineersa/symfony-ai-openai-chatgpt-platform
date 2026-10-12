@@ -36,12 +36,13 @@ final class ModelClient extends OpenResponsesModelClient
                 throw new InvalidArgumentException('ChatGPT request payload must be an object.');
             }
         }
-        $cacheKey = $options['prompt_cache_key'] ?? null;
-        if (!\is_string($cacheKey) || '' === $cacheKey) {
-            throw new InvalidArgumentException('ChatGPT requests require a string prompt_cache_key option.');
-        }
         /** @var array<string, mixed> $payload */
-        $body = $this->encodeJsonBody($this->createBody($model, $payload, $options));
+        $body = $this->createBody($model, $payload, $options);
+        $cacheKey = $body['prompt_cache_key'] ?? null;
+        if (!\is_string($cacheKey) || '' === $cacheKey) {
+            throw new InvalidArgumentException('ChatGPT requests require a non-empty string prompt_cache_key.');
+        }
+        $body = $this->encodeJsonBody($body);
         $encoding = [];
         if (\extension_loaded('zstd')) {
             $compress = 'zstd_compress';
