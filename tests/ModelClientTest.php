@@ -26,7 +26,7 @@ final class ModelClientTest extends TestCase
     {
         $body = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$body): MockResponse {
-            $body = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $body = self::decodeBody($options);
 
             return new MockResponse(AuthFixture::sse([['type' => 'response.completed', 'response' => ['output' => []]]]));
         });
@@ -83,7 +83,7 @@ final class ModelClientTest extends TestCase
         $httpClient = (new MockHttpClient(static function (string $method, string $url, array $options) use (&$body, &$httpOptions, $response): MockResponse {
             self::assertSame('POST', $method);
             self::assertSame('https://api.openai.com/v1/responses', $url);
-            $body = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $body = self::decodeBody($options);
             $httpOptions = $options;
 
             return $response;
@@ -125,7 +125,7 @@ final class ModelClientTest extends TestCase
     {
         $body = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$body): MockResponse {
-            $body = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $body = self::decodeBody($options);
 
             return new MockResponse('');
         });
@@ -171,7 +171,7 @@ final class ModelClientTest extends TestCase
     {
         $seen = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$seen): MockResponse {
-            $seen[] = [$options['normalized_headers'], json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR)['prompt_cache_key']];
+            $seen[] = [$options['normalized_headers'], self::decodeBody($options)['prompt_cache_key']];
 
             return new MockResponse(AuthFixture::sse([['type' => 'response.completed', 'response' => ['output' => []]]]));
         });
@@ -184,7 +184,59 @@ final class ModelClientTest extends TestCase
             self::assertSame('stable-key', $bodyKey);
             self::assertSame('session-id: stable-key', $headers['session-id'][0] ?? null);
             self::assertSame('x-client-request-id: stable-key', $headers['x-client-request-id'][0] ?? null);
+            self::assertSame('Originator: Test app', $headers['originator'][0] ?? null);
         }
+    }
+
+    public function testCompressionPreservesOpaqueReasoningAndToolHistory(): void
+    {
+        $input = [
+            ['type' => 'reasoning', 'id' => 'rs_native', 'encrypted_content' => base64_encode(str_repeat('opaque reasoning', 100)), 'summary' => []],
+            ['type' => 'function_call', 'call_id' => 'call_native', 'name' => 'lookup', 'arguments' => '{"query":"hello"}'],
+            ['type' => 'function_call_output', 'call_id' => 'call_native', 'output' => str_repeat('tool result ', 100)],
+        ];
+        $http = new MockHttpClient(static function (string $method, string $url, array $options) use ($input): MockResponse {
+            self::assertSame('https://api.openai.com/v1/responses', $url);
+            self::assertSame($input, self::decodeBody($options)['input']);
+            if (\extension_loaded('zstd')) {
+                self::assertSame(['Content-Encoding: zstd'], $options['normalized_headers']['content-encoding']);
+                $uncompress = 'zstd_uncompress';
+                $compress = 'zstd_compress';
+                $decoded = $uncompress($options['body']);
+                self::assertIsString($decoded);
+                self::assertSame($options['body'], $compress($decoded, 3));
+            } else {
+                self::assertArrayNotHasKey('content-encoding', $options['normalized_headers']);
+            }
+
+            return new MockResponse('');
+        });
+        $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
+        $client->request(new ResponsesModel('test-model'), ['input' => $input], ['prompt_cache_key' => 'stable-key'])->getObject()->cancel();
+    }
+
+    public function testExcessiveCompressionRatioKeepsPlainJson(): void
+    {
+        $http = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
+            self::assertArrayNotHasKey('content-encoding', $options['normalized_headers']);
+            self::assertSame(str_repeat('a', 100000), self::decodeBody($options)['input'][0]['content']);
+
+            return new MockResponse('');
+        });
+        $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
+        $client->request(new ResponsesModel('test-model'), ['input' => [['role' => 'user', 'content' => str_repeat('a', 100000)]]], ['prompt_cache_key' => 'stable-key'])->getObject()->cancel();
+    }
+
+    /** @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private static function decodeBody(array $options): array
+    {
+        if (isset($options['normalized_headers']['content-encoding'])) {
+            self::assertSame(['Content-Encoding: zstd'], $options['normalized_headers']['content-encoding']);
+        }
+
+        return AuthFixture::decodeBody($options);
     }
 
     public function testRejectsMissingPromptCacheKeyBeforeHttpRequest(): void

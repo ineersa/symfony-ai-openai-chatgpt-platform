@@ -76,6 +76,14 @@ php chatgpt.php ask YOUR_MODEL
 
 If you signed in without enabling plan usage, run `php chatgpt.php auth:chatgpt login --consent`. The provider refreshes expired credentials before sending requests.
 
+## Request transport
+
+The provider sends `Originator` using `OAuthConfig::appName`, the same application identity used for OAuth registration. Existing constructor and factory calls do not change.
+
+Install the optional `ext-zstd` extension to enable lossless level-3 compression of the final JSON request. Without the extension, the provider sends plain JSON. Compression preserves history, encrypted reasoning, tools, and request options. The provider sets `Content-Encoding: zstd` only when it sends compressed bytes; routing headers and `prompt_cache_key` remain unchanged.
+
+Frames that do not reduce size or exceed the API's 100:1 compression-ratio limit use plain JSON instead. A compression failure propagates before sending rather than silently retrying an oversized plain request. Compression mitigates gateway upload-size failures; it does not guarantee that every request in a model's advertised context window will fit.
+
 ## Documentation
 
 | Guide | Use it to |

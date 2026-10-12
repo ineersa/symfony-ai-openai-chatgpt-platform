@@ -42,6 +42,20 @@ final class ModelClient extends OpenResponsesModelClient
         }
         /** @var array<string, mixed> $payload */
         $body = $this->encodeJsonBody($this->createBody($model, $payload, $options));
+        $encoding = [];
+        if (\extension_loaded('zstd')) {
+            $compress = 'zstd_compress';
+            $compressed = $compress($body, 3);
+            if (!\is_string($compressed) || '' === $compressed) {
+                throw new \RuntimeException('ChatGPT request compression failed.');
+            }
+            // The API rejects compression ratios above 100:1. Plain JSON also avoids
+            // spending bandwidth on frames larger than the original body.
+            if (\strlen($compressed) < \strlen($body) && \strlen($body) <= 100 * \strlen($compressed)) {
+                $body = $compressed;
+                $encoding = ['Content-Encoding' => 'zstd'];
+            }
+        }
         // AsyncResponse makes the framework stream parser usable without EventSourceHttpClient's reconnect policy.
         $response = new AsyncResponse($this->client, 'POST', 'https://api.openai.com/v1/responses', [
             // ChatGPT routing derives prompt-cache affinity from the session-id header; the body's
@@ -52,6 +66,8 @@ final class ModelClient extends OpenResponsesModelClient
                 'Accept' => 'text/event-stream',
                 'session-id' => $cacheKey,
                 'x-client-request-id' => $cacheKey,
+                'Originator' => $this->auth->appName(),
+                ...$encoding,
             ],
             'auth_bearer' => $this->auth->accessToken(),
             'body' => $body,

@@ -20,6 +20,9 @@
         "symfony/uid": "^8.0",
         "symfony/cache": "^8.0"
     },
+    "suggest": {
+        "ext-zstd": "Lossless level-3 compression of Responses request bodies to mitigate gateway upload-size failures."
+    },
     "require-dev": {
         "friendsofphp/php-cs-fixer": "^3.94",
         "phpstan/phpstan": "^2.1",

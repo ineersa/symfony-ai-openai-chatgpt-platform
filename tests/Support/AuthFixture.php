@@ -65,6 +65,25 @@ final class AuthFixture
         return new OAuthService($storage, $httpClient, $verifier ?? new IdTokenVerifier($httpClient, clock: $clock), new OAuthConfig('Test app'), $clock);
     }
 
+    /**
+     * @param array<string, mixed> $options
+     *
+     * @return array<string, mixed>
+     */
+    public static function decodeBody(array $options): array
+    {
+        $body = $options['body'];
+        if (isset($options['normalized_headers']['content-encoding'])) {
+            $uncompress = 'zstd_uncompress';
+            $body = $uncompress($body);
+            if (!\is_string($body)) {
+                throw new \RuntimeException('Invalid compressed test request.');
+            }
+        }
+
+        return json_decode($body, true, flags: \JSON_THROW_ON_ERROR);
+    }
+
     /** @param list<array<string, mixed>> $events */
     public static function sse(array $events): string
     {

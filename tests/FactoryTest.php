@@ -52,7 +52,7 @@ final class FactoryTest extends TestCase
         ];
         $bodies = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$bodies, $events): MockResponse {
-            $bodies[] = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $bodies[] = AuthFixture::decodeBody($options);
 
             return new MockResponse(AuthFixture::sse(1 === \count($bodies) ? $events : [['type' => 'response.completed', 'response' => ['output' => []]]]));
         });
@@ -118,7 +118,7 @@ final class FactoryTest extends TestCase
         ];
         $bodies = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$bodies, $events): MockResponse {
-            $bodies[] = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $bodies[] = AuthFixture::decodeBody($options);
 
             return new MockResponse(AuthFixture::sse(1 === \count($bodies) ? $events : [['type' => 'response.output_text.delta', 'delta' => 'Done'], ['type' => 'response.completed', 'response' => ['output' => []]]]));
         });
