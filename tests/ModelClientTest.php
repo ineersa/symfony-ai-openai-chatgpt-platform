@@ -65,7 +65,7 @@ final class ModelClientTest extends TestCase
         $http = new MockHttpClient(static function (): never { self::fail('Invalid history must not reach HTTP.'); });
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
         $this->expectException(InvalidArgumentException::class);
-        $client->request(new ResponsesModel('test-model'), ['input' => $input]);
+        $client->request(new ResponsesModel('test-model'), ['input' => $input], ['prompt_cache_key' => 'stable']);
     }
 
     /** @return iterable<string, array{list<array<string, mixed>>}> */
@@ -130,7 +130,7 @@ final class ModelClientTest extends TestCase
             return new MockResponse('');
         });
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
-        $client->request(new ResponsesModel('test-model'), ['input' => []], [PlatformSubscriber::RESPONSE_FORMAT => ['type' => 'json_schema', 'json_schema' => ['name' => 'Result', 'schema' => ['type' => 'object']]]]);
+        $client->request(new ResponsesModel('test-model'), ['input' => []], ['prompt_cache_key' => 'stable', PlatformSubscriber::RESPONSE_FORMAT => ['type' => 'json_schema', 'json_schema' => ['name' => 'Result', 'schema' => ['type' => 'object']]]]);
         self::assertSame('json_schema', $body['text']['format']['type']);
         self::assertSame('Result', $body['text']['format']['name']);
         self::assertArrayNotHasKey(PlatformSubscriber::RESPONSE_FORMAT, $body);
@@ -141,7 +141,7 @@ final class ModelClientTest extends TestCase
         $http = new MockHttpClient(static function (): never { self::fail('Unexpected inference request.'); });
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record(1)), $http));
         $this->expectException(InvalidArgumentException::class);
-        $client->request(new ResponsesModel('test-model'), ['input' => []], ['tools' => [['type' => 'tool_search']]]);
+        $client->request(new ResponsesModel('test-model'), ['input' => []], ['prompt_cache_key' => 'stable', 'tools' => [['type' => 'tool_search']]]);
     }
 
     public function testTransportInterruptionAfterProgressDoesNotReconnectWithSseHeaders(): void
@@ -152,7 +152,7 @@ final class ModelClientTest extends TestCase
         })();
         $http = new MockHttpClient(new MockResponse($chunks, ['response_headers' => ['content-type: text/event-stream']]));
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
-        $raw = $client->request(new ResponsesModel('test-model'), ['input' => []]);
+        $raw = $client->request(new ResponsesModel('test-model'), ['input' => []], ['prompt_cache_key' => 'stable']);
         $result = (new \Symfony\AI\Platform\Bridge\OpenAIChatGPT\ResultConverter())->convert($raw);
         self::assertInstanceOf(StreamResult::class, $result);
         $stream = $result->getContent();
@@ -165,5 +165,34 @@ final class ModelClientTest extends TestCase
             self::assertStringContainsString('Synthetic interruption', $exception->getMessage());
             self::assertSame(1, $http->getRequestsCount());
         }
+    }
+
+    public function testSessionIdHeadersMirrorPromptCacheKeyAcrossConsecutiveRequests(): void
+    {
+        $seen = [];
+        $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$seen): MockResponse {
+            $seen[] = [$options['normalized_headers'], json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR)['prompt_cache_key']];
+
+            return new MockResponse(AuthFixture::sse([['type' => 'response.completed', 'response' => ['output' => []]]]));
+        });
+        $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
+        foreach ([1, 2] as $_) {
+            $client->request(new ResponsesModel('test-model'), ['input' => []], ['prompt_cache_key' => 'stable-key'])->getObject()->cancel();
+        }
+        self::assertCount(2, $seen);
+        foreach ($seen as [$headers, $bodyKey]) {
+            self::assertSame('stable-key', $bodyKey);
+            self::assertSame('session-id: stable-key', $headers['session-id'][0] ?? null);
+            self::assertSame('x-client-request-id: stable-key', $headers['x-client-request-id'][0] ?? null);
+        }
+    }
+
+    public function testRejectsMissingPromptCacheKeyBeforeHttpRequest(): void
+    {
+        $http = new MockHttpClient(static function (): never { self::fail('Requests without prompt_cache_key must not reach HTTP.'); });
+        $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('prompt_cache_key');
+        $client->request(new ResponsesModel('test-model'), ['input' => []]);
     }
 }

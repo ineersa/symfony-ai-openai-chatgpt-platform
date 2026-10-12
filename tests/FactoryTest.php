@@ -124,7 +124,7 @@ final class FactoryTest extends TestCase
         });
         $provider = Factory::createProvider(AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http), $http, new TestModelCatalog());
         $history = new MessageBag(new SystemMessage('Follow developer instructions'), Message::ofUser('Look up a file'));
-        $first = $provider->invoke('test-model', $history, ['tools' => [new Tool(new ExecutionReference(self::class), 'local_lookup', 'Look up a file', ['type' => 'object', 'properties' => ['path' => ['type' => 'string', 'description' => 'File path']], 'required' => ['path'], 'additionalProperties' => false])]])->getResult();
+        $first = $provider->invoke('test-model', $history, ['prompt_cache_key' => 'stable-session-key', 'tools' => [new Tool(new ExecutionReference(self::class), 'local_lookup', 'Look up a file', ['type' => 'object', 'properties' => ['path' => ['type' => 'string', 'description' => 'File path']], 'required' => ['path'], 'additionalProperties' => false])]])->getResult();
         self::assertInstanceOf(StreamResult::class, $first);
         $assistant = $first->getAssistantMessage();
         self::assertCount(1, $assistant->getToolCalls());
@@ -137,7 +137,7 @@ final class FactoryTest extends TestCase
         self::assertNotNull($signature);
         self::assertSame($reasoning, json_decode($signature, true, flags: \JSON_THROW_ON_ERROR));
         $next = new MessageBag(...[...$history->getMessages(), $assistant, Message::ofToolCall($toolCall, 'file contents')]);
-        $second = $provider->invoke('test-model', $next)->getResult();
+        $second = $provider->invoke('test-model', $next, ['prompt_cache_key' => 'stable-session-key'])->getResult();
         self::assertInstanceOf(StreamResult::class, $second);
         self::assertSame('Done', $second->getAssistantMessage()->asText());
         self::assertSame('Follow developer instructions', $bodies[1]['instructions']);
