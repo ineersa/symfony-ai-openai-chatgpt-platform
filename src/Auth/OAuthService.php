@@ -19,6 +19,11 @@ final readonly class OAuthService
     ) {
     }
 
+    public function appName(): string
+    {
+        return $this->config->appName;
+    }
+
     public function beginAuthorization(bool $consent = false): AuthorizationRequestDTO
     {
         $hostId = $this->storage->installationId();

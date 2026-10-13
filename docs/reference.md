@@ -82,6 +82,7 @@ When overriding clocks, inject the same clock into `OAuthService` and `IdTokenVe
 | Setting | Behavior |
 | --- | --- |
 | Endpoint | `POST https://api.openai.com/v1/responses` |
+| `prompt_cache_key` | Mandatory non-empty string; generate once per conversation and reuse across requests and retries |
 | Storage and streaming | Always `store: false` and `stream: true` |
 | History | Full input array on every request; no `previous_response_id` |
 | Instructions | Framework system messages become instructions; raw system input becomes developer input |
@@ -94,6 +95,10 @@ When overriding clocks, inject the same clock into `OAuthService` and `IdTokenVe
 Supported input item types are `message`, `reasoning`, `function_call`, `function_call_output`, `additional_tools`, and `configuration_update`. Ordinary role/content messages may omit `type`. Hosted tools and tool-search items are rejected.
 
 The request body retains these fields: `model`, `input`, `instructions`, `reasoning`, `text`, `tool_choice`, `parallel_tool_calls`, `prompt_cache_key`, `include`, and `service_tier`. The client then sets `store` and `stream`. Other fields, including unsupported preview fields and host-only options, are omitted.
+
+Pass `prompt_cache_key` through invocation options. Direct `ModelClient::request()` callers may also supply it in the payload; payload fields take precedence over options. The effective final-body key supplies both `session-id` and `x-client-request-id`. Missing, empty, or non-string effective keys raise `InvalidArgumentException` before HTTP. The client does not generate a replacement key.
+
+The `session-id` header carries the conversation key for cache affinity. Keep that key stable when resuming a conversation; do not generate a new key for each request. The package sends the same value in the body and both headers automatically. This requirement follows observed ChatGPT OAuth routing behavior and does not guarantee a cache hit. See [conversation continuity](usage.md#continue-a-conversation).
 
 Structured output and invalid UTF-8 substitution use Symfony AI OpenResponses facilities. See OpenAI's [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) for service restrictions beyond the adapter's checks.
 

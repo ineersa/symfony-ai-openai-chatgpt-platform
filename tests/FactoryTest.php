@@ -28,6 +28,28 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class FactoryTest extends TestCase
 {
+    public function testDocumentedFirstInvocationsSupplyConversationKeys(): void
+    {
+        foreach (['README.md', 'docs/usage.md'] as $document) {
+            $source = file_get_contents(\dirname(__DIR__).'/'.$document);
+            self::assertIsString($source);
+            self::assertSame(1, preg_match('/\$conversationKey = .*?\$result = \$provider->invoke\(.*?\n\);/s', $source, $matches));
+            $http = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
+                $body = AuthFixture::decodeBody($options);
+                self::assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $body['prompt_cache_key']);
+                self::assertSame(['session-id: '.$body['prompt_cache_key']], $options['normalized_headers']['session-id']);
+
+                return new MockResponse(AuthFixture::sse([['type' => 'response.output_text.delta', 'delta' => 'OK'], ['type' => 'response.completed', 'response' => ['output' => []]]]));
+            });
+            $provider = Factory::createProvider(AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http), $http, new TestModelCatalog());
+            $modelName = 'test-model';
+            // Execute the actual documentation invocation against the same mocked provider
+            // used by framework integration tests, without running its login/bootstrap code.
+            $result = eval('use Symfony\\AI\\Platform\\Bridge\\OpenResponses\\ResponsesModel; use Symfony\\AI\\Platform\\Capability; use Symfony\\AI\\Platform\\Message\\Message; use Symfony\\AI\\Platform\\Message\\MessageBag; '.$matches[0].' return $result;');
+            self::assertSame('OK', implode('', iterator_to_array($result->asTextStream())));
+        }
+    }
+
     public function testNativeMessagePhasesBoundariesAndControlsRoundTripThroughFactoryAfterSerialization(): void
     {
         $comment = ['type' => 'message', 'id' => 'msg_comment', 'role' => 'assistant', 'name' => 'assistant', 'phase' => 'commentary', 'content' => [['type' => 'output_text', 'text' => 'Checking']]];
@@ -52,7 +74,7 @@ final class FactoryTest extends TestCase
         ];
         $bodies = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$bodies, $events): MockResponse {
-            $bodies[] = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $bodies[] = AuthFixture::decodeBody($options);
 
             return new MockResponse(AuthFixture::sse(1 === \count($bodies) ? $events : [['type' => 'response.completed', 'response' => ['output' => []]]]));
         });
@@ -118,13 +140,13 @@ final class FactoryTest extends TestCase
         ];
         $bodies = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$bodies, $events): MockResponse {
-            $bodies[] = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $bodies[] = AuthFixture::decodeBody($options);
 
             return new MockResponse(AuthFixture::sse(1 === \count($bodies) ? $events : [['type' => 'response.output_text.delta', 'delta' => 'Done'], ['type' => 'response.completed', 'response' => ['output' => []]]]));
         });
         $provider = Factory::createProvider(AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http), $http, new TestModelCatalog());
         $history = new MessageBag(new SystemMessage('Follow developer instructions'), Message::ofUser('Look up a file'));
-        $first = $provider->invoke('test-model', $history, ['tools' => [new Tool(new ExecutionReference(self::class), 'local_lookup', 'Look up a file', ['type' => 'object', 'properties' => ['path' => ['type' => 'string', 'description' => 'File path']], 'required' => ['path'], 'additionalProperties' => false])]])->getResult();
+        $first = $provider->invoke('test-model', $history, ['prompt_cache_key' => 'stable-session-key', 'tools' => [new Tool(new ExecutionReference(self::class), 'local_lookup', 'Look up a file', ['type' => 'object', 'properties' => ['path' => ['type' => 'string', 'description' => 'File path']], 'required' => ['path'], 'additionalProperties' => false])]])->getResult();
         self::assertInstanceOf(StreamResult::class, $first);
         $assistant = $first->getAssistantMessage();
         self::assertCount(1, $assistant->getToolCalls());
@@ -137,7 +159,7 @@ final class FactoryTest extends TestCase
         self::assertNotNull($signature);
         self::assertSame($reasoning, json_decode($signature, true, flags: \JSON_THROW_ON_ERROR));
         $next = new MessageBag(...[...$history->getMessages(), $assistant, Message::ofToolCall($toolCall, 'file contents')]);
-        $second = $provider->invoke('test-model', $next)->getResult();
+        $second = $provider->invoke('test-model', $next, ['prompt_cache_key' => 'stable-session-key'])->getResult();
         self::assertInstanceOf(StreamResult::class, $second);
         self::assertSame('Done', $second->getAssistantMessage()->asText());
         self::assertSame('Follow developer instructions', $bodies[1]['instructions']);

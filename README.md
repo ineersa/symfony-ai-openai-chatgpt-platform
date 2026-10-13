@@ -57,15 +57,19 @@ if ('ask' !== ($argv[1] ?? null)) {
 
 $modelName = $argv[2] ?? throw new InvalidArgumentException('Usage: php chatgpt.php ask MODEL');
 $provider = Factory::createProvider($oauth, $http, new ModelCatalog());
+$conversationKey = bin2hex(random_bytes(16));
 $result = $provider->invoke(
 	new ResponsesModel($modelName, [Capability::INPUT_MESSAGES, Capability::OUTPUT_TEXT]),
 	new MessageBag(Message::ofUser('Hello')),
+	['prompt_cache_key' => $conversationKey],
 );
 foreach ($result->asTextStream() as $text) {
 	echo $text;
 }
 echo PHP_EOL;
 ```
+
+Every request requires a non-empty string `prompt_cache_key`. Generate it once per conversation and reuse it for every request, including retries. This example starts a new conversation on each `ask` command. Persist the key with the history when continuing a conversation across processes.
 
 Log in, then stream a reply. Replace `YOUR_MODEL` with a model available to your account:
 
@@ -75,6 +79,14 @@ php chatgpt.php ask YOUR_MODEL
 ```
 
 If you signed in without enabling plan usage, run `php chatgpt.php auth:chatgpt login --consent`. The provider refreshes expired credentials before sending requests.
+
+## Request transport
+
+The provider sends `Originator` using `OAuthConfig::appName`, the same application identity used for OAuth registration. Existing constructor and factory calls do not change.
+
+Install the optional `ext-zstd` extension to enable lossless level-3 compression of the final JSON request. Without the extension, the provider sends plain JSON. Compression preserves history, encrypted reasoning, tools, and request options. The provider sets `Content-Encoding: zstd` only when it sends compressed bytes; routing headers and `prompt_cache_key` remain unchanged.
+
+Frames that do not reduce size or exceed the API's 100:1 compression-ratio limit use plain JSON instead. A compression failure propagates before sending rather than silently retrying an oversized plain request. Compression mitigates gateway upload-size failures; it does not guarantee that every request in a model's advertised context window will fit.
 
 ## Documentation
 
