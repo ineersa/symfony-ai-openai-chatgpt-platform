@@ -6,7 +6,6 @@ namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests;
 
 use PHPUnit\Framework\TestCase;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Factory;
-use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ReasoningConfiguration;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Result\Stream\Delta\MessageComplete;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\AuthFixture;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\InMemoryAuthStorage;
@@ -50,7 +49,7 @@ final class FactoryTest extends TestCase
         }
     }
 
-    public function testNativeMessagePhasesBoundariesAndControlsRoundTripThroughFactoryAfterSerialization(): void
+    public function testNativeMessagePhasesAndBoundariesRoundTripThroughFactoryAfterSerialization(): void
     {
         $comment = ['type' => 'message', 'id' => 'msg_comment', 'role' => 'assistant', 'name' => 'assistant', 'phase' => 'commentary', 'content' => [['type' => 'output_text', 'text' => 'Checking']]];
         $adjacent = ['type' => 'message', 'id' => 'msg_adjacent', 'role' => 'assistant', 'phase' => 'commentary', 'content' => [['type' => 'output_text', 'text' => 'One'], ['type' => 'output_text', 'text' => 'Two']]];
@@ -106,20 +105,20 @@ final class FactoryTest extends TestCase
         $nonText = $framework->getAssistantMessage();
         self::assertCount(1, $nonText->getThinking());
         self::assertCount(1, $nonText->getToolCalls());
-        $assistant = new AssistantMessage($restored[0], $nonText->getThinking()[0], $restored[2], new ReasoningConfiguration('high'), $nonText->getToolCalls()[0], $restored[4], $restored[5]);
-        $next = $provider->invoke('test-model', new MessageBag(Message::ofUser('Start'), $assistant), ['reasoning' => ['effort' => 'low'], 'prompt_cache_key' => 'stable-session-key', 'previous_response_id' => 'forbidden', 'store' => true, 'stream' => false])->getResult();
+        $assistant = new AssistantMessage($restored[0], $nonText->getThinking()[0], $restored[2], $nonText->getToolCalls()[0], $restored[4], $restored[5]);
+        $next = $provider->invoke('test-model', new MessageBag(Message::ofUser('Start'), $assistant), ['reasoning' => ['effort' => 'high'], 'prompt_cache_key' => 'stable-session-key', 'previous_response_id' => 'forbidden', 'store' => true, 'stream' => false])->getResult();
         self::assertInstanceOf(StreamResult::class, $next);
         iterator_to_array($next->getContent());
         self::assertSame($comment, $bodies[1]['input'][1]);
         self::assertSame($reasoning, $bodies[1]['input'][2]);
         self::assertSame($adjacent, $bodies[1]['input'][3]);
-        self::assertSame(['type' => 'configuration_update', 'reasoning' => ['effort' => 'high']], $bodies[1]['input'][4]);
-        self::assertSame('call_one', $bodies[1]['input'][5]['call_id']);
-        self::assertSame('fc_one', $bodies[1]['input'][5]['id']);
-        self::assertSame('local_lookup', $bodies[1]['input'][5]['name']);
-        self::assertSame($final, $bodies[1]['input'][6]);
-        self::assertSame($noPhase, $bodies[1]['input'][7]);
-        self::assertSame(['effort' => 'low'], $bodies[1]['reasoning']);
+        self::assertSame('call_one', $bodies[1]['input'][4]['call_id']);
+        self::assertSame('fc_one', $bodies[1]['input'][4]['id']);
+        self::assertSame('local_lookup', $bodies[1]['input'][4]['name']);
+        self::assertSame($final, $bodies[1]['input'][5]);
+        self::assertSame($noPhase, $bodies[1]['input'][6]);
+        self::assertSame(['effort' => 'low'], $bodies[0]['reasoning']);
+        self::assertSame(['effort' => 'high'], $bodies[1]['reasoning']);
         self::assertSame('stable-session-key', $bodies[1]['prompt_cache_key']);
         self::assertSame($bodies[0]['prompt_cache_key'], $bodies[1]['prompt_cache_key']);
         self::assertFalse($bodies[1]['store']);
