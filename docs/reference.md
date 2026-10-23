@@ -104,6 +104,8 @@ Structured output and invalid UTF-8 substitution use Symfony AI OpenResponses fa
 
 ## Request transport
 
+Streamed Responses usage events pass through OpenResponses `TokenUsageExtractor::fromDataArray()`. Symfony AI 0.15 maps `usage.input_tokens_details.cache_write_tokens` to `TokenUsage::getCacheCreationTokens()`. This bridge always streams, so its `extract()` override returns null and never reads the SSE body as JSON.
+
 The client uses HTTP with SSE responses. It sends `Originator` from `OAuthConfig::appName`, the application identity used for OAuth registration.
 
 When `ext-zstd` is loaded, the client compresses the final JSON body with Zstandard level 3. It sends those bytes with `Content-Encoding: zstd` only if they are smaller than the JSON and the compression ratio does not exceed 100:1. Otherwise, or without the extension, it sends plain JSON.
