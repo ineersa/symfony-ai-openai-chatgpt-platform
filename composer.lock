@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "cbd45d0f14ca86c6e6188574fc68c105",
+    "content-hash": "41b40f2133dbf74a3d76b195c6121ff9",
     "packages": [
         {
             "name": "doctrine/deprecations",
@@ -1214,21 +1214,21 @@
         },
         {
             "name": "symfony/ai-open-responses-platform",
-            "version": "v0.14.0",
+            "version": "v0.15.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/symfony/ai-open-responses-platform.git",
-                "reference": "008404ea302c68cbc5c5cd38ef44133e68153302"
+                "reference": "ab82622ca8c267f3347e75f81166a2003f75c438"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/symfony/ai-open-responses-platform/zipball/008404ea302c68cbc5c5cd38ef44133e68153302",
-                "reference": "008404ea302c68cbc5c5cd38ef44133e68153302",
+                "url": "https://api.github.com/repos/symfony/ai-open-responses-platform/zipball/ab82622ca8c267f3347e75f81166a2003f75c438",
+                "reference": "ab82622ca8c267f3347e75f81166a2003f75c438",
                 "shasum": ""
             },
             "require": {
                 "php": ">=8.2",
-                "symfony/ai-platform": "^0.14",
+                "symfony/ai-platform": "^0.15",
                 "symfony/http-client": "^7.3|^8.0"
             },
             "require-dev": {
@@ -1275,7 +1275,7 @@
                 "platform"
             ],
             "support": {
-                "source": "https://github.com/symfony/ai-open-responses-platform/tree/v0.14.0"
+                "source": "https://github.com/symfony/ai-open-responses-platform/tree/v0.15.0"
             },
             "funding": [
                 {
@@ -1295,20 +1295,20 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-09-24T22:33:15+00:00"
+            "time": "2026-10-22T23:44:24+00:00"
         },
         {
             "name": "symfony/ai-platform",
-            "version": "v0.14.0",
+            "version": "v0.15.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/symfony/ai-platform.git",
-                "reference": "37380dbeed8175873934df424e04c67b8400d3c6"
+                "reference": "fa3bcc147286c0eb87ff0b192cfd4fa5230033a3"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/symfony/ai-platform/zipball/37380dbeed8175873934df424e04c67b8400d3c6",
-                "reference": "37380dbeed8175873934df424e04c67b8400d3c6",
+                "url": "https://api.github.com/repos/symfony/ai-platform/zipball/fa3bcc147286c0eb87ff0b192cfd4fa5230033a3",
+                "reference": "fa3bcc147286c0eb87ff0b192cfd4fa5230033a3",
                 "shasum": ""
             },
             "require": {
@@ -1414,7 +1414,7 @@
                 "voyage"
             ],
             "support": {
-                "source": "https://github.com/symfony/ai-platform/tree/v0.14.0"
+                "source": "https://github.com/symfony/ai-platform/tree/v0.15.0"
             },
             "funding": [
                 {
@@ -1434,7 +1434,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-09-24T22:43:20+00:00"
+            "time": "2026-10-22T23:08:39+00:00"
         },
         {
             "name": "symfony/cache",

@@ -2,7 +2,7 @@
 
 Use your ChatGPT subscription with Symfony AI through [Sign in with ChatGPT](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt). The package handles browser login, token refresh, and requests to the OpenAI Responses API using only HTTP and server-sent events (SSE).
 
-Requires PHP 8.5+, Symfony AI 0.14, and a ChatGPT account that permits subscription sharing.
+Requires PHP 8.5+, Symfony AI 0.14 or 0.15, and a ChatGPT account that permits subscription sharing.
 
 > [!WARNING]
 > Install `ext-zstd` to enable request compression. Without it, uncompressed requests exceeding roughly 1 MiB can fail with HTTP 503 because of an observed OpenAI gateway upload-limit bug, not a documented universal API limit. Compression mitigates this bug but does not guarantee that the model's full context window will fit.

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests;
 
+use Composer\InstalledVersions;
 use PHPUnit\Framework\TestCase;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Factory;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Result\Stream\Delta\MessageComplete;
@@ -69,7 +70,7 @@ final class FactoryTest extends TestCase
             ['type' => 'response.output_item.added', 'output_index' => 3, 'item' => array_replace($call, ['arguments' => ''])],
             ['type' => 'response.function_call_arguments.delta', 'item_id' => 'fc_one', 'delta' => '{"path":"file"}'],
             ['type' => 'response.output_item.done', 'output_index' => 3, 'item' => $call],
-            ['type' => 'response.completed', 'response' => ['output' => [$comment, $reasoning, $adjacent, $call, $final, $noPhase], 'usage' => ['input_tokens' => 12, 'output_tokens' => 5, 'total_tokens' => 17]]],
+            ['type' => 'response.completed', 'response' => ['output' => [$comment, $reasoning, $adjacent, $call, $final, $noPhase], 'usage' => ['input_tokens' => 12, 'output_tokens' => 5, 'total_tokens' => 17, 'input_tokens_details' => ['cached_tokens' => 4, 'cache_write_tokens' => 3], 'output_tokens_details' => ['reasoning_tokens' => 2]]]],
         ];
         $bodies = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$bodies, $events): MockResponse {
@@ -98,6 +99,16 @@ final class FactoryTest extends TestCase
         $usage = $result->getMetadata()->get('token_usage');
         self::assertInstanceOf(TokenUsageInterface::class, $usage);
         self::assertSame(12, $usage->getPromptTokens());
+        self::assertSame(5, $usage->getCompletionTokens());
+        self::assertSame(2, $usage->getThinkingTokens());
+        self::assertSame(4, $usage->getCachedTokens());
+        $version = InstalledVersions::getVersion('symfony/ai-open-responses-platform');
+        if (null !== $version && version_compare($version, '0.15.0', '>=')) {
+            self::assertSame(3, $usage->getCacheCreationTokens());
+        } else {
+            self::assertNull($usage->getCacheCreationTokens());
+        }
+        self::assertSame(17, $usage->getTotalTokens());
         self::assertSame([0, 2, 4, 5], array_keys($native));
         // Simulate durable Text fields, not a full raw response or a flattened transcript.
         $saved = json_decode(json_encode(array_map(static fn (Text $text): array => ['text' => $text->getText(), 'signature' => $text->getSignature()], $native), \JSON_THROW_ON_ERROR), true, flags: \JSON_THROW_ON_ERROR);
