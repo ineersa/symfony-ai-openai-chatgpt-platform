@@ -49,7 +49,7 @@ final class FactoryTest extends TestCase
         }
     }
 
-    public function testNativeMessagePhasesBoundariesAndControlsRoundTripThroughFactoryAfterSerialization(): void
+    public function testNativeMessagePhasesAndBoundariesRoundTripThroughFactoryAfterSerialization(): void
     {
         $comment = ['type' => 'message', 'id' => 'msg_comment', 'role' => 'assistant', 'name' => 'assistant', 'phase' => 'commentary', 'content' => [['type' => 'output_text', 'text' => 'Checking']]];
         $adjacent = ['type' => 'message', 'id' => 'msg_adjacent', 'role' => 'assistant', 'phase' => 'commentary', 'content' => [['type' => 'output_text', 'text' => 'One'], ['type' => 'output_text', 'text' => 'Two']]];

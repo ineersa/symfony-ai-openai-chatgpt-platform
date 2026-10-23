@@ -57,7 +57,7 @@ Reuse the same `prompt_cache_key` for all requests and retries in the conversati
 
 Cache reuse depends on identical prompt prefixes, not just a matching key. Measurements on the ChatGPT OAuth endpoint showed better reuse with `session-id` than with the body key alone; this is observed routing behavior, not a cache-hit guarantee. Set the key through invocation options rather than configuring headers separately.
 
-Keep the request-level reasoning baseline fixed if you use [ordered effort changes](replay.md#change-reasoning-effort).
+Changing `reasoning.effort` between requests can reduce prompt-cache reuse. See [change reasoning effort](replay.md#change-reasoning-effort).
 
 ## Execute local tools
 
