@@ -92,7 +92,7 @@ When overriding clocks, inject the same clock into `OAuthService` and `IdTokenVe
 | OAuth timeout | 15-second idle timeout and 30-second total cap for token HTTP requests |
 | Retry | No automatic inference retry or SSE reconnection |
 
-Supported input item types are `message`, `reasoning`, `function_call`, `function_call_output`, `additional_tools`, and `configuration_update`. Ordinary role/content messages may omit `type`. Hosted tools and tool-search items are rejected.
+Supported input item types are `message`, `reasoning`, `function_call`, `function_call_output`, and `additional_tools`. Ordinary role/content messages may omit `type`. Native `configuration_update` items, hosted tools, and tool-search items are rejected before HTTP.
 
 The request body retains these fields: `model`, `input`, `instructions`, `reasoning`, `text`, `tool_choice`, `parallel_tool_calls`, `prompt_cache_key`, `include`, and `service_tier`. The client then sets `store` and `stream`. Other fields, including unsupported preview fields and host-only options, are omitted.
 

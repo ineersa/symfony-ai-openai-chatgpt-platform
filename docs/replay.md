@@ -51,44 +51,22 @@ For example, preserve `[reasoning, tool call, reasoning, message]` even if the f
 
 ## Change reasoning effort
 
-Live subscription-route acceptance of `configuration_update` remains unverified. Serialization tests prove the request shape, not endpoint support or a prompt-cache hit.
-
-For models that accept native configuration updates, insert `ReasoningConfiguration` at the transition's position in assistant content:
+Pass the selected effort in the options for each request:
 
 ```php
-use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ReasoningConfiguration;
-use Symfony\AI\Platform\Message\AssistantMessage;
-use Symfony\AI\Platform\Message\Content\Text;
-
-$message = new AssistantMessage(
-	new ReasoningConfiguration('high'),
-	new Text('Continue with the new effort.'),
-);
+$result = $provider->invoke($model, $messages, [
+	'reasoning' => ['effort' => 'high'],
+	'prompt_cache_key' => $cacheKey,
+]);
 ```
 
-The contract emits:
+Use an effort supported by the selected model. Keep the conversation's `prompt_cache_key` stable. Changing `reasoning.effort` can reduce prompt-cache reuse.
 
-```json
-{"type":"configuration_update","reasoning":{"effort":"high"}}
-```
-
-To insert the control before an existing assistant message, use its metadata instead:
-
-```php
-$message->getMetadata()->add(ReasoningConfiguration::METADATA_KEY, 'high');
-```
-
-These are alternative placements. Do not apply both to the same transition. Adjacent controls are rejected.
-
-Keep the initial request-level `reasoning.effort` and conversation `prompt_cache_key` unchanged. The control changes neither field. Allowed efforts are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the host must check which efforts the selected model supports. `max` is sent unchanged.
-
-Validate a candidate control before recording it in your session's durable transition ledger. Replay rejects malformed controls and unknown effort values.
-
-Your application owns transition anchors, persistence, model baselines, fork scope, and history changes after compaction. The package does not reset or relocate controls automatically, truncate history, or fall back to a request-level effort override.
+Native `configuration_update` history items are unsupported and rejected before HTTP. Reasoning changes do not add history items or require a transition ledger.
 
 ## Customize serialization
 
-`Factory::createProvider()` uses `ChatGPTContract` by default. Keep its message and control adaptations when adding your own normalizers:
+`Factory::createProvider()` uses `ChatGPTContract` by default. Keep its native message adaptations when adding your own normalizers:
 
 ```php
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Contract\ChatGPTContract;

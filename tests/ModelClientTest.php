@@ -21,8 +21,8 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class ModelClientTest extends TestCase
 {
-    #[DataProvider('advertisedControlEfforts')]
-    public function testNativeControlsKeepExactHistoryPositionsAndDoNotOverrideLowBaseline(string $effort): void
+    #[DataProvider('requestEfforts')]
+    public function testSelectedRequestEffortPreservesHistory(string $effort): void
     {
         $body = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$body): MockResponse {
@@ -32,16 +32,14 @@ final class ModelClientTest extends TestCase
         });
         $input = [
             ['role' => 'user', 'content' => 'Start'],
-            ['type' => 'configuration_update', 'reasoning' => ['effort' => $effort]],
-            ['role' => 'assistant', 'content' => 'High remains active'],
+            ['role' => 'assistant', 'content' => 'Continue'],
             ['role' => 'user', 'content' => 'Next turn'],
-            ['type' => 'configuration_update', 'reasoning' => ['effort' => 'low']],
-            ['role' => 'assistant', 'content' => 'Reset to low'],
+            ['role' => 'assistant', 'content' => 'Finish'],
         ];
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
-        $raw = $client->request(new ResponsesModel('test-model'), ['input' => $input], ['reasoning' => ['effort' => 'low'], 'prompt_cache_key' => 'stable', 'previous_response_id' => 'forbidden', 'truncation' => 'auto']);
+        $raw = $client->request(new ResponsesModel('test-model'), ['input' => $input], ['reasoning' => ['effort' => $effort], 'prompt_cache_key' => 'stable', 'previous_response_id' => 'forbidden', 'truncation' => 'auto']);
         self::assertSame($input, $body['input']);
-        self::assertSame(['effort' => 'low'], $body['reasoning']);
+        self::assertSame(['effort' => $effort], $body['reasoning']);
         self::assertSame('stable', $body['prompt_cache_key']);
         self::assertFalse($body['store']);
         self::assertTrue($body['stream']);
@@ -51,29 +49,23 @@ final class ModelClientTest extends TestCase
     }
 
     /** @return iterable<string, array{string}> */
-    public static function advertisedControlEfforts(): iterable
+    public static function requestEfforts(): iterable
     {
         foreach (['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as $effort) {
             yield $effort => [$effort];
         }
     }
 
-    /** @param list<array<string, mixed>> $input */
-    #[DataProvider('invalidControls')]
-    public function testRejectsInvalidOrAdjacentNativeControlsBeforeHttpRequest(array $input): void
+    public function testRejectsNativeConfigurationUpdatesBeforeHttpRequest(): void
     {
-        $http = new MockHttpClient(static function (): never { self::fail('Invalid history must not reach HTTP.'); });
+        $http = new MockHttpClient(static function (): never { self::fail('Unsupported history must not reach HTTP.'); });
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
         $this->expectException(InvalidArgumentException::class);
-        $client->request(new ResponsesModel('test-model'), ['input' => $input], ['prompt_cache_key' => 'stable']);
-    }
-
-    /** @return iterable<string, array{list<array<string, mixed>>}> */
-    public static function invalidControls(): iterable
-    {
-        yield 'invalid shape' => [[['type' => 'configuration_update', 'reasoning' => ['effort' => 'high'], 'role' => 'assistant']]];
-        yield 'invalid effort' => [[['type' => 'configuration_update', 'reasoning' => ['effort' => 'bogus']]]];
-        yield 'adjacent updates' => [[['type' => 'configuration_update', 'reasoning' => ['effort' => 'high']], ['type' => 'configuration_update', 'reasoning' => ['effort' => 'low']]]];
+        $this->expectExceptionMessage('ChatGPT history contains an unsupported output or hosted tool item.');
+        $client->request(new ResponsesModel('test-model'), ['input' => [
+            ['role' => 'user', 'content' => 'Start'],
+            ['type' => 'configuration_update', 'reasoning' => ['effort' => 'high']],
+        ]], ['prompt_cache_key' => 'stable']);
     }
 
     public function testRestrictsBodyGroupsFunctionsPreservesHistoryAndOverridesHttpDeadline(): void
