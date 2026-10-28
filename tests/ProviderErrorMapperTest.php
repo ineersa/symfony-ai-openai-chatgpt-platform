@@ -13,6 +13,31 @@ use Symfony\AI\Platform\Exception\ServerException;
 
 final class ProviderErrorMapperTest extends TestCase
 {
+    /** @param array<string, mixed> $error */
+    #[\PHPUnit\Framework\Attributes\DataProvider('mappedErrors')]
+    public function testKnownErrorsKeepTheirClassAndMessage(array $error, ?int $status, string $class, string $message): void
+    {
+        try {
+            ProviderErrorMapper::throwError($error + ['message' => 'private provider body'], $status);
+        } catch (\Throwable $exception) {
+            self::assertSame($class, $exception::class);
+            self::assertSame($message, $exception->getMessage());
+            self::assertNotInstanceOf(ProviderErrorExceptionInterface::class, $exception);
+        }
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, int|null, class-string<\Throwable>, string}> */
+    public static function mappedErrors(): iterable
+    {
+        yield 'subscription' => [['code' => 'insufficient_quota'], 400, \Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionLimitException::class, 'ChatGPT subscription usage is unavailable. Manage usage at https://chatgpt.com/settings/usage'];
+        yield 'policy' => [['code' => 'chatpass_v2_scope_not_authorized'], 403, \Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionPolicyException::class, 'ChatGPT rejected subscription access. Check account eligibility, authorization, and supported request capabilities.'];
+        yield 'context' => [['code' => 'context_length_exceeded'], 400, \Symfony\AI\Platform\Exception\ExceedContextSizeException::class, 'ChatGPT context exceeds the model limit.'];
+        yield 'content' => [['code' => 'content_filter'], 400, \Symfony\AI\Platform\Exception\ContentFilterException::class, 'ChatGPT declined the content.'];
+        yield 'auth' => [[], 401, \Symfony\AI\Platform\Exception\AuthenticationException::class, 'ChatGPT authentication failed. Reauthorize with auth:chatgpt login.'];
+        yield 'rate limit' => [[], 429, \Symfony\AI\Platform\Exception\RateLimitExceededException::class, 'Rate limit exceeded. ChatGPT request was rate limited. Manage usage at https://chatgpt.com/settings/usage'];
+        yield 'server' => [[], 503, ServerException::class, 'Server error (HTTP 503). ChatGPT is temporarily unavailable.'];
+    }
+
     public function testUnmappedBadRequestRetainsOnlyStructuredMetadata(): void
     {
         try {
