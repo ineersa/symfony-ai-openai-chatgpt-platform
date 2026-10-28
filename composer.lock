@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "41b40f2133dbf74a3d76b195c6121ff9",
+    "content-hash": "428afba53e15dddbac9a1e359230d47a",
     "packages": [
         {
             "name": "doctrine/deprecations",
@@ -1214,21 +1214,21 @@
         },
         {
             "name": "symfony/ai-open-responses-platform",
-            "version": "v0.15.0",
+            "version": "v1.0.0-BETA1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/symfony/ai-open-responses-platform.git",
-                "reference": "ab82622ca8c267f3347e75f81166a2003f75c438"
+                "reference": "78bbb8d721e68979958513c042f66eeb592b7ef4"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/symfony/ai-open-responses-platform/zipball/ab82622ca8c267f3347e75f81166a2003f75c438",
-                "reference": "ab82622ca8c267f3347e75f81166a2003f75c438",
+                "url": "https://api.github.com/repos/symfony/ai-open-responses-platform/zipball/78bbb8d721e68979958513c042f66eeb592b7ef4",
+                "reference": "78bbb8d721e68979958513c042f66eeb592b7ef4",
                 "shasum": ""
             },
             "require": {
                 "php": ">=8.2",
-                "symfony/ai-platform": "^0.15",
+                "symfony/ai-platform": "^1.0",
                 "symfony/http-client": "^7.3|^8.0"
             },
             "require-dev": {
@@ -1275,7 +1275,7 @@
                 "platform"
             ],
             "support": {
-                "source": "https://github.com/symfony/ai-open-responses-platform/tree/v0.15.0"
+                "source": "https://github.com/symfony/ai-open-responses-platform/tree/v1.0.0-BETA1"
             },
             "funding": [
                 {
@@ -1295,20 +1295,20 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-10-22T23:44:24+00:00"
+            "time": "2026-10-26T14:03:07+00:00"
         },
         {
             "name": "symfony/ai-platform",
-            "version": "v0.15.0",
+            "version": "v1.0.0-BETA1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/symfony/ai-platform.git",
-                "reference": "fa3bcc147286c0eb87ff0b192cfd4fa5230033a3"
+                "reference": "4ac262078d1f00c03805be2ab4042ae39fe3bc85"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/symfony/ai-platform/zipball/fa3bcc147286c0eb87ff0b192cfd4fa5230033a3",
-                "reference": "fa3bcc147286c0eb87ff0b192cfd4fa5230033a3",
+                "url": "https://api.github.com/repos/symfony/ai-platform/zipball/4ac262078d1f00c03805be2ab4042ae39fe3bc85",
+                "reference": "4ac262078d1f00c03805be2ab4042ae39fe3bc85",
                 "shasum": ""
             },
             "require": {
@@ -1320,6 +1320,7 @@
                 "psr/log": "^3.0",
                 "symfony/clock": "^7.3|^8.0",
                 "symfony/event-dispatcher": "^7.3|^8.0",
+                "symfony/polyfill-php85": "^1.33",
                 "symfony/property-access": "^7.3|^8.0",
                 "symfony/property-info": "^7.3|^8.0",
                 "symfony/serializer": "^7.3|^8.0",
@@ -1414,7 +1415,7 @@
                 "voyage"
             ],
             "support": {
-                "source": "https://github.com/symfony/ai-platform/tree/v0.15.0"
+                "source": "https://github.com/symfony/ai-platform/tree/v1.0.0-BETA1"
             },
             "funding": [
                 {
@@ -1434,7 +1435,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-10-22T23:08:39+00:00"
+            "time": "2026-10-26T14:03:07+00:00"
         },
         {
             "name": "symfony/cache",
@@ -7428,7 +7429,10 @@
     ],
     "aliases": [],
     "minimum-stability": "stable",
-    "stability-flags": {},
+    "stability-flags": {
+        "symfony/ai-open-responses-platform": 10,
+        "symfony/ai-platform": 10
+    },
     "prefer-stable": false,
     "prefer-lowest": false,
     "platform": {
