@@ -7,7 +7,6 @@ namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Contract;
 use PHPUnit\Framework\TestCase;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Contract\ChatGPTContract;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\MessageItem;
-use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ReasoningConfiguration;
 use Symfony\AI\Platform\Bridge\OpenResponses\ResponsesModel;
 use Symfony\AI\Platform\Message\AssistantMessage;
 use Symfony\AI\Platform\Message\Content\Text;
@@ -25,26 +24,24 @@ final class AssistantMessageNormalizerTest extends TestCase
         $message = new AssistantMessage(
             MessageItem::toText($one), MessageItem::toText($two),
             new Thinking('', json_encode($reasoning, \JSON_THROW_ON_ERROR)),
-            new ReasoningConfiguration('high'),
             new ToolCall('call_one|fc_one', 'lookup', ['path' => 'file']),
             new Text('Old'), new Text(' behavior'),
         );
         $payload = ChatGPTContract::create()->createRequestPayload(new ResponsesModel('test-model'), new MessageBag($message));
         self::assertIsArray($payload);
-        self::assertSame([$one, $two, $reasoning, (new ReasoningConfiguration('high'))->toArray(),
+        self::assertSame([$one, $two, $reasoning,
             ['arguments' => '{"path":"file"}', 'call_id' => 'call_one|fc_one', 'name' => 'lookup', 'type' => 'function_call'],
             ['role' => 'assistant', 'type' => 'message', 'content' => 'Old behavior'],
         ], $payload['input']);
     }
 
-    public function testTransitionMetadataAnchorsNativeControlBeforeAssistantContent(): void
+    public function testStaleTransitionMetadataDoesNotEmitHistoryControls(): void
     {
         $message = new AssistantMessage(new Text('After transition'));
-        $message->getMetadata()->add(ReasoningConfiguration::METADATA_KEY, 'high');
+        $message->getMetadata()->add('chatgpt.reasoning_effort', 'high');
         $payload = ChatGPTContract::create()->createRequestPayload(new ResponsesModel('test-model'), new MessageBag($message));
         self::assertIsArray($payload);
         self::assertSame([
-            ['type' => 'configuration_update', 'reasoning' => ['effort' => 'high']],
             ['role' => 'assistant', 'type' => 'message', 'content' => 'After transition'],
         ], $payload['input']);
     }

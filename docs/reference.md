@@ -82,6 +82,7 @@ When overriding clocks, inject the same clock into `OAuthService` and `IdTokenVe
 | Setting | Behavior |
 | --- | --- |
 | Endpoint | `POST https://api.openai.com/v1/responses` |
+| `prompt_cache_key` | Required by this package, optional in the OpenAI API; non-empty string reused across conversation requests and retries |
 | Storage and streaming | Always `store: false` and `stream: true` |
 | History | Full input array on every request; no `previous_response_id` |
 | Instructions | Framework system messages become instructions; raw system input becomes developer input |
@@ -91,11 +92,27 @@ When overriding clocks, inject the same clock into `OAuthService` and `IdTokenVe
 | OAuth timeout | 15-second idle timeout and 30-second total cap for token HTTP requests |
 | Retry | No automatic inference retry or SSE reconnection |
 
-Supported input item types are `message`, `reasoning`, `function_call`, `function_call_output`, `additional_tools`, and `configuration_update`. Ordinary role/content messages may omit `type`. Hosted tools and tool-search items are rejected.
+Supported input item types are `message`, `reasoning`, `function_call`, `function_call_output`, and `additional_tools`. Ordinary role/content messages may omit `type`. Native `configuration_update` items, hosted tools, and tool-search items are rejected before HTTP.
 
 The request body retains these fields: `model`, `input`, `instructions`, `reasoning`, `text`, `tool_choice`, `parallel_tool_calls`, `prompt_cache_key`, `include`, and `service_tier`. The client then sets `store` and `stream`. Other fields, including unsupported preview fields and host-only options, are omitted.
 
+Pass `prompt_cache_key` through invocation options. Direct `ModelClient::request()` callers may also supply it in the payload; payload fields take precedence over options. The effective final-body key supplies both `session-id` and `x-client-request-id`. Missing, empty, or non-string effective keys raise `InvalidArgumentException` before HTTP. The client does not generate a replacement key.
+
+The package's key requirement supports observed ChatGPT OAuth cache routing, not an OpenAI API validation rule. Cache reuse also requires identical prompt prefixes and is not guaranteed. See [conversation continuity](usage.md#continue-a-conversation).
+
 Structured output and invalid UTF-8 substitution use Symfony AI OpenResponses facilities. See OpenAI's [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) for service restrictions beyond the adapter's checks.
+
+## Request transport
+
+Streamed Responses usage events pass through OpenResponses `TokenUsageExtractor::fromDataArray()`. Symfony AI 0.15 maps `usage.input_tokens_details.cache_write_tokens` to `TokenUsage::getCacheCreationTokens()`. This bridge always streams, so its `extract()` override returns null and never reads the SSE body as JSON.
+
+The client uses HTTP with SSE responses. It sends `Originator` from `OAuthConfig::appName`, the application identity used for OAuth registration.
+
+When `ext-zstd` is loaded, the client compresses the final JSON body with Zstandard level 3. It sends those bytes with `Content-Encoding: zstd` only if they are smaller than the JSON and the compression ratio does not exceed 100:1. Otherwise, or without the extension, it sends plain JSON.
+
+Compression preserves the entire request, including encrypted reasoning, tools, history, and options. A failed compression call raises `RuntimeException` before inference; the client does not fall back to plain JSON on failure or truncate history.
+
+An observed OpenAI gateway bug rejects uploads above roughly 1 MiB with HTTP 503. This limit concerns uploaded bytes, not tokens, and is not a documented universal API limit. Compression mitigates it but can still produce a request too large for the affected gateway. See [compression setup](usage.md#enable-request-compression).
 
 ## Errors
 

@@ -21,27 +21,25 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class ModelClientTest extends TestCase
 {
-    #[DataProvider('advertisedControlEfforts')]
-    public function testNativeControlsKeepExactHistoryPositionsAndDoNotOverrideLowBaseline(string $effort): void
+    #[DataProvider('requestEfforts')]
+    public function testSelectedRequestEffortPreservesHistory(string $effort): void
     {
         $body = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$body): MockResponse {
-            $body = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $body = self::decodeBody($options);
 
             return new MockResponse(AuthFixture::sse([['type' => 'response.completed', 'response' => ['output' => []]]]));
         });
         $input = [
             ['role' => 'user', 'content' => 'Start'],
-            ['type' => 'configuration_update', 'reasoning' => ['effort' => $effort]],
-            ['role' => 'assistant', 'content' => 'High remains active'],
+            ['role' => 'assistant', 'content' => 'Continue'],
             ['role' => 'user', 'content' => 'Next turn'],
-            ['type' => 'configuration_update', 'reasoning' => ['effort' => 'low']],
-            ['role' => 'assistant', 'content' => 'Reset to low'],
+            ['role' => 'assistant', 'content' => 'Finish'],
         ];
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
-        $raw = $client->request(new ResponsesModel('test-model'), ['input' => $input], ['reasoning' => ['effort' => 'low'], 'prompt_cache_key' => 'stable', 'previous_response_id' => 'forbidden', 'truncation' => 'auto']);
+        $raw = $client->request(new ResponsesModel('test-model'), ['input' => $input], ['reasoning' => ['effort' => $effort], 'prompt_cache_key' => 'stable', 'previous_response_id' => 'forbidden', 'truncation' => 'auto']);
         self::assertSame($input, $body['input']);
-        self::assertSame(['effort' => 'low'], $body['reasoning']);
+        self::assertSame(['effort' => $effort], $body['reasoning']);
         self::assertSame('stable', $body['prompt_cache_key']);
         self::assertFalse($body['store']);
         self::assertTrue($body['stream']);
@@ -51,29 +49,23 @@ final class ModelClientTest extends TestCase
     }
 
     /** @return iterable<string, array{string}> */
-    public static function advertisedControlEfforts(): iterable
+    public static function requestEfforts(): iterable
     {
         foreach (['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as $effort) {
             yield $effort => [$effort];
         }
     }
 
-    /** @param list<array<string, mixed>> $input */
-    #[DataProvider('invalidControls')]
-    public function testRejectsInvalidOrAdjacentNativeControlsBeforeHttpRequest(array $input): void
+    public function testRejectsNativeConfigurationUpdatesBeforeHttpRequest(): void
     {
-        $http = new MockHttpClient(static function (): never { self::fail('Invalid history must not reach HTTP.'); });
+        $http = new MockHttpClient(static function (): never { self::fail('Unsupported history must not reach HTTP.'); });
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
         $this->expectException(InvalidArgumentException::class);
-        $client->request(new ResponsesModel('test-model'), ['input' => $input], ['prompt_cache_key' => 'stable']);
-    }
-
-    /** @return iterable<string, array{list<array<string, mixed>>}> */
-    public static function invalidControls(): iterable
-    {
-        yield 'invalid shape' => [[['type' => 'configuration_update', 'reasoning' => ['effort' => 'high'], 'role' => 'assistant']]];
-        yield 'invalid effort' => [[['type' => 'configuration_update', 'reasoning' => ['effort' => 'bogus']]]];
-        yield 'adjacent updates' => [[['type' => 'configuration_update', 'reasoning' => ['effort' => 'high']], ['type' => 'configuration_update', 'reasoning' => ['effort' => 'low']]]];
+        $this->expectExceptionMessage('ChatGPT history contains an unsupported output or hosted tool item.');
+        $client->request(new ResponsesModel('test-model'), ['input' => [
+            ['role' => 'user', 'content' => 'Start'],
+            ['type' => 'configuration_update', 'reasoning' => ['effort' => 'high']],
+        ]], ['prompt_cache_key' => 'stable']);
     }
 
     public function testRestrictsBodyGroupsFunctionsPreservesHistoryAndOverridesHttpDeadline(): void
@@ -83,7 +75,7 @@ final class ModelClientTest extends TestCase
         $httpClient = (new MockHttpClient(static function (string $method, string $url, array $options) use (&$body, &$httpOptions, $response): MockResponse {
             self::assertSame('POST', $method);
             self::assertSame('https://api.openai.com/v1/responses', $url);
-            $body = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $body = self::decodeBody($options);
             $httpOptions = $options;
 
             return $response;
@@ -125,7 +117,7 @@ final class ModelClientTest extends TestCase
     {
         $body = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$body): MockResponse {
-            $body = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $body = self::decodeBody($options);
 
             return new MockResponse('');
         });
@@ -171,7 +163,7 @@ final class ModelClientTest extends TestCase
     {
         $seen = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$seen): MockResponse {
-            $seen[] = [$options['normalized_headers'], json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR)['prompt_cache_key']];
+            $seen[] = [$options['normalized_headers'], self::decodeBody($options)['prompt_cache_key']];
 
             return new MockResponse(AuthFixture::sse([['type' => 'response.completed', 'response' => ['output' => []]]]));
         });
@@ -184,15 +176,104 @@ final class ModelClientTest extends TestCase
             self::assertSame('stable-key', $bodyKey);
             self::assertSame('session-id: stable-key', $headers['session-id'][0] ?? null);
             self::assertSame('x-client-request-id: stable-key', $headers['x-client-request-id'][0] ?? null);
+            self::assertSame('Originator: Test app', $headers['originator'][0] ?? null);
         }
     }
 
-    public function testRejectsMissingPromptCacheKeyBeforeHttpRequest(): void
+    public function testCompressionPreservesOpaqueReasoningAndToolHistory(): void
+    {
+        $input = [
+            ['type' => 'reasoning', 'id' => 'rs_native', 'encrypted_content' => base64_encode(str_repeat('opaque reasoning', 100)), 'summary' => []],
+            ['type' => 'function_call', 'call_id' => 'call_native', 'name' => 'lookup', 'arguments' => '{"query":"hello"}'],
+            ['type' => 'function_call_output', 'call_id' => 'call_native', 'output' => str_repeat('tool result ', 100)],
+        ];
+        $http = new MockHttpClient(static function (string $method, string $url, array $options) use ($input): MockResponse {
+            self::assertSame('https://api.openai.com/v1/responses', $url);
+            self::assertSame($input, self::decodeBody($options)['input']);
+            if (\extension_loaded('zstd')) {
+                self::assertSame(['Content-Encoding: zstd'], $options['normalized_headers']['content-encoding']);
+                $uncompress = 'zstd_uncompress';
+                $compress = 'zstd_compress';
+                $decoded = $uncompress($options['body']);
+                self::assertIsString($decoded);
+                self::assertSame($options['body'], $compress($decoded, 3));
+            } else {
+                self::assertArrayNotHasKey('content-encoding', $options['normalized_headers']);
+            }
+
+            return new MockResponse('');
+        });
+        $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
+        $client->request(new ResponsesModel('test-model'), ['input' => $input], ['prompt_cache_key' => 'stable-key'])->getObject()->cancel();
+    }
+
+    public function testExcessiveCompressionRatioKeepsPlainJson(): void
+    {
+        $http = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
+            self::assertArrayNotHasKey('content-encoding', $options['normalized_headers']);
+            self::assertSame(str_repeat('a', 100000), self::decodeBody($options)['input'][0]['content']);
+
+            return new MockResponse('');
+        });
+        $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
+        $client->request(new ResponsesModel('test-model'), ['input' => [['role' => 'user', 'content' => str_repeat('a', 100000)]]], ['prompt_cache_key' => 'stable-key'])->getObject()->cancel();
+    }
+
+    /** @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private static function decodeBody(array $options): array
+    {
+        if (isset($options['normalized_headers']['content-encoding'])) {
+            self::assertSame(['Content-Encoding: zstd'], $options['normalized_headers']['content-encoding']);
+        }
+
+        return AuthFixture::decodeBody($options);
+    }
+
+    /** @param array<string, mixed> $options */
+    #[DataProvider('payloadCacheKeyOptions')]
+    public function testPayloadCacheKeyControlsBodyAndRoutingHeaders(array $options): void
+    {
+        $http = new MockHttpClient(static function (string $method, string $url, array $httpOptions): MockResponse {
+            self::assertSame('payload-key', self::decodeBody($httpOptions)['prompt_cache_key']);
+            self::assertSame(['session-id: payload-key'], $httpOptions['normalized_headers']['session-id']);
+            self::assertSame(['x-client-request-id: payload-key'], $httpOptions['normalized_headers']['x-client-request-id']);
+
+            return new MockResponse('');
+        });
+        $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
+        $client->request(new ResponsesModel('test-model'), ['input' => [], 'prompt_cache_key' => 'payload-key'], $options)->getObject()->cancel();
+    }
+
+    /** @return iterable<string, array{array<string, mixed>}> */
+    public static function payloadCacheKeyOptions(): iterable
+    {
+        yield 'payload only' => [[]];
+        yield 'conflicting option' => [['prompt_cache_key' => 'option-key']];
+        yield 'invalid option overridden' => [['prompt_cache_key' => null]];
+    }
+
+    /** @param array<string, mixed> $payload
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('invalidCacheKeys')]
+    public function testRejectsInvalidEffectivePromptCacheKeyBeforeHttpRequest(array $payload, array $options): void
     {
         $http = new MockHttpClient(static function (): never { self::fail('Requests without prompt_cache_key must not reach HTTP.'); });
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('prompt_cache_key');
-        $client->request(new ResponsesModel('test-model'), ['input' => []]);
+        $client->request(new ResponsesModel('test-model'), ['input' => [], ...$payload], $options);
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, array<string, mixed>}> */
+    public static function invalidCacheKeys(): iterable
+    {
+        yield 'missing' => [[], []];
+        foreach ([null, '', 1, false, []] as $index => $invalid) {
+            yield 'invalid option '.$index => [[], ['prompt_cache_key' => $invalid]];
+            yield 'invalid payload overrides valid option '.$index => [['prompt_cache_key' => $invalid], ['prompt_cache_key' => 'valid-option']];
+        }
     }
 }

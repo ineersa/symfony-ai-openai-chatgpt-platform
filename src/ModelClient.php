@@ -36,12 +36,27 @@ final class ModelClient extends OpenResponsesModelClient
                 throw new InvalidArgumentException('ChatGPT request payload must be an object.');
             }
         }
-        $cacheKey = $options['prompt_cache_key'] ?? null;
-        if (!\is_string($cacheKey) || '' === $cacheKey) {
-            throw new InvalidArgumentException('ChatGPT requests require a string prompt_cache_key option.');
-        }
         /** @var array<string, mixed> $payload */
-        $body = $this->encodeJsonBody($this->createBody($model, $payload, $options));
+        $body = $this->createBody($model, $payload, $options);
+        $cacheKey = $body['prompt_cache_key'] ?? null;
+        if (!\is_string($cacheKey) || '' === $cacheKey) {
+            throw new InvalidArgumentException('ChatGPT requests require a non-empty string prompt_cache_key.');
+        }
+        $body = $this->encodeJsonBody($body);
+        $encoding = [];
+        if (\extension_loaded('zstd')) {
+            $compress = 'zstd_compress';
+            $compressed = $compress($body, 3);
+            if (!\is_string($compressed) || '' === $compressed) {
+                throw new \RuntimeException('ChatGPT request compression failed.');
+            }
+            // The API rejects compression ratios above 100:1. Plain JSON also avoids
+            // spending bandwidth on frames larger than the original body.
+            if (\strlen($compressed) < \strlen($body) && \strlen($body) <= 100 * \strlen($compressed)) {
+                $body = $compressed;
+                $encoding = ['Content-Encoding' => 'zstd'];
+            }
+        }
         // AsyncResponse makes the framework stream parser usable without EventSourceHttpClient's reconnect policy.
         $response = new AsyncResponse($this->client, 'POST', 'https://api.openai.com/v1/responses', [
             // ChatGPT routing derives prompt-cache affinity from the session-id header; the body's
@@ -52,6 +67,8 @@ final class ModelClient extends OpenResponsesModelClient
                 'Accept' => 'text/event-stream',
                 'session-id' => $cacheKey,
                 'x-client-request-id' => $cacheKey,
+                'Originator' => $this->auth->appName(),
+                ...$encoding,
             ],
             'auth_bearer' => $this->auth->accessToken(),
             'body' => $body,
@@ -71,7 +88,6 @@ final class ModelClient extends OpenResponsesModelClient
         if (!\is_array($input) || !array_is_list($input)) {
             throw new InvalidArgumentException('ChatGPT input must be an array of history items.');
         }
-        $previousControl = false;
         foreach ($input as &$item) {
             if (!\is_array($item)) {
                 throw new InvalidArgumentException('ChatGPT history items must be objects.');
@@ -79,17 +95,9 @@ final class ModelClient extends OpenResponsesModelClient
             if ('system' === ($item['role'] ?? null)) {
                 $item['role'] = 'developer';
             }
-            if (!\in_array($item['type'] ?? null, [null, 'message', 'reasoning', 'function_call', 'function_call_output', 'additional_tools', 'configuration_update'], true)) {
+            if (!\in_array($item['type'] ?? null, [null, 'message', 'reasoning', 'function_call', 'function_call_output', 'additional_tools'], true)) {
                 throw new InvalidArgumentException('ChatGPT history contains an unsupported output or hosted tool item.');
             }
-            $control = 'configuration_update' === ($item['type'] ?? null);
-            if ($control) {
-                ReasoningConfiguration::fromArray($item);
-                if ($previousControl) {
-                    throw new InvalidArgumentException('ChatGPT history must not contain adjacent reasoning configuration updates.');
-                }
-            }
-            $previousControl = $control;
             if (\in_array($item['type'] ?? null, ['function_call', 'function_call_output'], true) && \is_string($item['call_id'] ?? null) && str_contains($item['call_id'], '|')) {
                 [$item['call_id'], $itemId] = explode('|', $item['call_id'], 2);
                 if ('function_call' === $item['type']) {

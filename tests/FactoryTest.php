@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests;
 
+use Composer\InstalledVersions;
 use PHPUnit\Framework\TestCase;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Factory;
-use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ReasoningConfiguration;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Result\Stream\Delta\MessageComplete;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\AuthFixture;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\InMemoryAuthStorage;
@@ -28,7 +28,29 @@ use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class FactoryTest extends TestCase
 {
-    public function testNativeMessagePhasesBoundariesAndControlsRoundTripThroughFactoryAfterSerialization(): void
+    public function testDocumentedFirstInvocationsSupplyConversationKeys(): void
+    {
+        foreach (['README.md', 'docs/usage.md'] as $document) {
+            $source = file_get_contents(\dirname(__DIR__).'/'.$document);
+            self::assertIsString($source);
+            self::assertSame(1, preg_match('/\$conversationKey = .*?\$result = \$provider->invoke\(.*?\n\);/s', $source, $matches));
+            $http = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
+                $body = AuthFixture::decodeBody($options);
+                self::assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $body['prompt_cache_key']);
+                self::assertSame(['session-id: '.$body['prompt_cache_key']], $options['normalized_headers']['session-id']);
+
+                return new MockResponse(AuthFixture::sse([['type' => 'response.output_text.delta', 'delta' => 'OK'], ['type' => 'response.completed', 'response' => ['output' => []]]]));
+            });
+            $provider = Factory::createProvider(AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http), $http, new TestModelCatalog());
+            $modelName = 'test-model';
+            // Execute the actual documentation invocation against the same mocked provider
+            // used by framework integration tests, without running its login/bootstrap code.
+            $result = eval('use Symfony\\AI\\Platform\\Bridge\\OpenResponses\\ResponsesModel; use Symfony\\AI\\Platform\\Capability; use Symfony\\AI\\Platform\\Message\\Message; use Symfony\\AI\\Platform\\Message\\MessageBag; '.$matches[0].' return $result;');
+            self::assertSame('OK', implode('', iterator_to_array($result->asTextStream())));
+        }
+    }
+
+    public function testNativeMessagePhasesAndBoundariesRoundTripThroughFactoryAfterSerialization(): void
     {
         $comment = ['type' => 'message', 'id' => 'msg_comment', 'role' => 'assistant', 'name' => 'assistant', 'phase' => 'commentary', 'content' => [['type' => 'output_text', 'text' => 'Checking']]];
         $adjacent = ['type' => 'message', 'id' => 'msg_adjacent', 'role' => 'assistant', 'phase' => 'commentary', 'content' => [['type' => 'output_text', 'text' => 'One'], ['type' => 'output_text', 'text' => 'Two']]];
@@ -48,11 +70,11 @@ final class FactoryTest extends TestCase
             ['type' => 'response.output_item.added', 'output_index' => 3, 'item' => array_replace($call, ['arguments' => ''])],
             ['type' => 'response.function_call_arguments.delta', 'item_id' => 'fc_one', 'delta' => '{"path":"file"}'],
             ['type' => 'response.output_item.done', 'output_index' => 3, 'item' => $call],
-            ['type' => 'response.completed', 'response' => ['output' => [$comment, $reasoning, $adjacent, $call, $final, $noPhase], 'usage' => ['input_tokens' => 12, 'output_tokens' => 5, 'total_tokens' => 17]]],
+            ['type' => 'response.completed', 'response' => ['output' => [$comment, $reasoning, $adjacent, $call, $final, $noPhase], 'usage' => ['input_tokens' => 12, 'output_tokens' => 5, 'total_tokens' => 17, 'input_tokens_details' => ['cached_tokens' => 4, 'cache_write_tokens' => 3], 'output_tokens_details' => ['reasoning_tokens' => 2]]]],
         ];
         $bodies = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$bodies, $events): MockResponse {
-            $bodies[] = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $bodies[] = AuthFixture::decodeBody($options);
 
             return new MockResponse(AuthFixture::sse(1 === \count($bodies) ? $events : [['type' => 'response.completed', 'response' => ['output' => []]]]));
         });
@@ -77,6 +99,16 @@ final class FactoryTest extends TestCase
         $usage = $result->getMetadata()->get('token_usage');
         self::assertInstanceOf(TokenUsageInterface::class, $usage);
         self::assertSame(12, $usage->getPromptTokens());
+        self::assertSame(5, $usage->getCompletionTokens());
+        self::assertSame(2, $usage->getThinkingTokens());
+        self::assertSame(4, $usage->getCachedTokens());
+        $version = InstalledVersions::getVersion('symfony/ai-open-responses-platform');
+        if (null !== $version && version_compare($version, '0.15.0', '>=')) {
+            self::assertSame(3, $usage->getCacheCreationTokens());
+        } else {
+            self::assertNull($usage->getCacheCreationTokens());
+        }
+        self::assertSame(17, $usage->getTotalTokens());
         self::assertSame([0, 2, 4, 5], array_keys($native));
         // Simulate durable Text fields, not a full raw response or a flattened transcript.
         $saved = json_decode(json_encode(array_map(static fn (Text $text): array => ['text' => $text->getText(), 'signature' => $text->getSignature()], $native), \JSON_THROW_ON_ERROR), true, flags: \JSON_THROW_ON_ERROR);
@@ -84,20 +116,20 @@ final class FactoryTest extends TestCase
         $nonText = $framework->getAssistantMessage();
         self::assertCount(1, $nonText->getThinking());
         self::assertCount(1, $nonText->getToolCalls());
-        $assistant = new AssistantMessage($restored[0], $nonText->getThinking()[0], $restored[2], new ReasoningConfiguration('high'), $nonText->getToolCalls()[0], $restored[4], $restored[5]);
-        $next = $provider->invoke('test-model', new MessageBag(Message::ofUser('Start'), $assistant), ['reasoning' => ['effort' => 'low'], 'prompt_cache_key' => 'stable-session-key', 'previous_response_id' => 'forbidden', 'store' => true, 'stream' => false])->getResult();
+        $assistant = new AssistantMessage($restored[0], $nonText->getThinking()[0], $restored[2], $nonText->getToolCalls()[0], $restored[4], $restored[5]);
+        $next = $provider->invoke('test-model', new MessageBag(Message::ofUser('Start'), $assistant), ['reasoning' => ['effort' => 'high'], 'prompt_cache_key' => 'stable-session-key', 'previous_response_id' => 'forbidden', 'store' => true, 'stream' => false])->getResult();
         self::assertInstanceOf(StreamResult::class, $next);
         iterator_to_array($next->getContent());
         self::assertSame($comment, $bodies[1]['input'][1]);
         self::assertSame($reasoning, $bodies[1]['input'][2]);
         self::assertSame($adjacent, $bodies[1]['input'][3]);
-        self::assertSame(['type' => 'configuration_update', 'reasoning' => ['effort' => 'high']], $bodies[1]['input'][4]);
-        self::assertSame('call_one', $bodies[1]['input'][5]['call_id']);
-        self::assertSame('fc_one', $bodies[1]['input'][5]['id']);
-        self::assertSame('local_lookup', $bodies[1]['input'][5]['name']);
-        self::assertSame($final, $bodies[1]['input'][6]);
-        self::assertSame($noPhase, $bodies[1]['input'][7]);
-        self::assertSame(['effort' => 'low'], $bodies[1]['reasoning']);
+        self::assertSame('call_one', $bodies[1]['input'][4]['call_id']);
+        self::assertSame('fc_one', $bodies[1]['input'][4]['id']);
+        self::assertSame('local_lookup', $bodies[1]['input'][4]['name']);
+        self::assertSame($final, $bodies[1]['input'][5]);
+        self::assertSame($noPhase, $bodies[1]['input'][6]);
+        self::assertSame(['effort' => 'low'], $bodies[0]['reasoning']);
+        self::assertSame(['effort' => 'high'], $bodies[1]['reasoning']);
         self::assertSame('stable-session-key', $bodies[1]['prompt_cache_key']);
         self::assertSame($bodies[0]['prompt_cache_key'], $bodies[1]['prompt_cache_key']);
         self::assertFalse($bodies[1]['store']);
@@ -118,7 +150,7 @@ final class FactoryTest extends TestCase
         ];
         $bodies = [];
         $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$bodies, $events): MockResponse {
-            $bodies[] = json_decode($options['body'], true, flags: \JSON_THROW_ON_ERROR);
+            $bodies[] = AuthFixture::decodeBody($options);
 
             return new MockResponse(AuthFixture::sse(1 === \count($bodies) ? $events : [['type' => 'response.output_text.delta', 'delta' => 'Done'], ['type' => 'response.completed', 'response' => ['output' => []]]]));
         });

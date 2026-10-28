@@ -28,13 +28,17 @@ Registration does not establish account entitlement. Consult OpenAI's [models an
 
 ## Send a message
 
+The package requires a non-empty string `prompt_cache_key`; the OpenAI API makes this field optional. Generate the key once when starting a conversation, not before each request:
+
 ```php
 use Symfony\AI\Platform\Message\Message;
 use Symfony\AI\Platform\Message\MessageBag;
 
+$conversationKey = bin2hex(random_bytes(16));
 $result = $provider->invoke(
 	$modelName,
 	new MessageBag(Message::ofUser('Hello')),
+	['prompt_cache_key' => $conversationKey],
 );
 foreach ($result->asTextStream() as $text) {
 	echo $text;
@@ -49,7 +53,11 @@ Every HTTP request sends the full history. Include earlier assistant output and 
 
 For durable sessions, keep native message boundaries, phases, encrypted reasoning signatures, and tool identities. Do not reduce an assistant turn to its concatenated visible text. See [history and reasoning](replay.md) before implementing persistence.
 
-Pass a stable `prompt_cache_key` for the conversation when your application uses prompt caching. Keep the request-level reasoning baseline fixed if you use [ordered effort changes](replay.md#change-reasoning-effort). Neither setting guarantees a cache hit.
+Reuse the same `prompt_cache_key` for all requests and retries in the conversation. Persist it with the history when continuing across processes. The package sends the key in the body and matching `session-id` and `x-client-request-id` headers to aid routing to the same cache shard.
+
+Cache reuse depends on identical prompt prefixes, not just a matching key. Measurements on the ChatGPT OAuth endpoint showed better reuse with `session-id` than with the body key alone; this is observed routing behavior, not a cache-hit guarantee. Set the key through invocation options rather than configuring headers separately.
+
+Changing `reasoning.effort` between requests can reduce prompt-cache reuse. See [change reasoning effort](replay.md#change-reasoning-effort).
 
 ## Execute local tools
 
@@ -80,6 +88,14 @@ try {
 ```
 
 The generation request has a 300-second idle timeout and no total duration cap. Token requests have a separate 30-second cap.
+
+## Enable request compression
+
+Install `ext-zstd` in the PHP runtime that sends requests. The package detects it automatically; no invocation option is needed. Confirm it is loaded with `php --ri zstd`.
+
+Without compression, requests exceeding roughly 1 MiB can fail with HTTP 503 because of an observed OpenAI gateway upload-limit bug. This is not a documented universal API limit. Compression reduces uploaded bytes without removing history, but does not guarantee that the model's full context window will fit.
+
+See [request transport](reference.md#request-transport) for compression guards and headers.
 
 ## Handle failures
 

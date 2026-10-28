@@ -1,21 +1,24 @@
 # OpenAI ChatGPT for Symfony AI
 
-Use your ChatGPT subscription with Symfony AI over the OpenAI Responses API. The package handles browser login, token refresh, and HTTP streaming.
+Use your ChatGPT subscription with Symfony AI through [Sign in with ChatGPT](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt). The package handles browser login, token refresh, and requests to the OpenAI Responses API using only HTTP and server-sent events (SSE).
 
-Requires PHP 8.5+, Symfony AI 0.14, and a ChatGPT account that permits subscription sharing. This package does not use the legacy Codex backend or WebSockets.
+Requires PHP 8.5+, Symfony AI 0.14 or 0.15, and a ChatGPT account that permits subscription sharing.
+
+> [!WARNING]
+> Install `ext-zstd` to enable request compression. Without it, uncompressed requests exceeding roughly 1 MiB can fail with HTTP 503 because of an observed OpenAI gateway upload-limit bug, not a documented universal API limit. Compression mitigates this bug but does not guarantee that the model's full context window will fit.
 
 ## Install the package
 
-There is no stable release yet. Add the Git repository and install the development branch:
-
 ```sh
-composer config repositories.chatgpt vcs https://github.com/ineersa/symfony-ai-openai-chatgpt-platform
-composer require ineersa/symfony-ai-openai-chatgpt-platform:dev-main
+composer require ineersa/symfony-ai-openai-chatgpt-platform
 ```
 
 ## Log in and send a message
 
-Save this as `chatgpt.php`. It stores credentials in `var/chatgpt/auth.json`. Add `/var/chatgpt/` to `.gitignore` before logging in.
+This basic `chatgpt.php` example provides a login command and streams a reply to "Hello". Add `/var/chatgpt/` to `.gitignore` before logging in to keep credentials out of version control.
+
+> [!WARNING]
+> This package requires a non-empty `prompt_cache_key`, although the OpenAI API makes it optional. Reuse one key per conversation: the package sends it as `prompt_cache_key`, `session-id`, and `x-client-request-id` to aid routing and cache reuse for identical prompt prefixes, without guaranteeing cache hits.
 
 ```php
 <?php
@@ -39,6 +42,7 @@ use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\Lock\Store\FlockStore;
 
+// Keep credentials on disk and coordinate token refresh across local processes.
 $lockDir = __DIR__.'/var/chatgpt/locks';
 (new Filesystem())->mkdir($lockDir, 0700);
 $http = HttpClient::create();
@@ -46,9 +50,11 @@ $store = new AuthFileStore(
 	__DIR__.'/var/chatgpt/auth.json',
 	new LockFactory(new FlockStore($lockDir)),
 );
-$config = new OAuthConfig('My CLI'); // Use your application's name.
+// Use your application's name for OAuth registration and the Originator header.
+$config = new OAuthConfig('My CLI');
 $oauth = new OAuthService($store, $http, new IdTokenVerifier($http), $config);
 
+// Handle login, refresh, and disconnect through Symfony Console.
 if ('ask' !== ($argv[1] ?? null)) {
 	$console = new Application();
 	$console->addCommand(new AuthCommand($oauth, $config));
@@ -57,10 +63,15 @@ if ('ask' !== ($argv[1] ?? null)) {
 
 $modelName = $argv[2] ?? throw new InvalidArgumentException('Usage: php chatgpt.php ask MODEL');
 $provider = Factory::createProvider($oauth, $http, new ModelCatalog());
+// Each ask starts a new conversation. Persist this key with history to continue it.
+$conversationKey = bin2hex(random_bytes(16));
+// Invoke an account-supported model; OAuthService refreshes expired credentials.
 $result = $provider->invoke(
 	new ResponsesModel($modelName, [Capability::INPUT_MESSAGES, Capability::OUTPUT_TEXT]),
 	new MessageBag(Message::ofUser('Hello')),
+	['prompt_cache_key' => $conversationKey],
 );
+// Print text as SSE events arrive, rather than waiting for the complete response.
 foreach ($result->asTextStream() as $text) {
 	echo $text;
 }
