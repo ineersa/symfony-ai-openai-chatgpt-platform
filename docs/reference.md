@@ -130,7 +130,9 @@ HTTP failures and streamed error events use the same classification. Provider me
 | Symfony AI `BadRequestException` | Rejected request or permissions | Correct the request or permissions |
 | `Auth\AuthException` | OAuth, identity, or storage failure | Report the failure; see [OAuth recovery](oauth.md) |
 
-Empty, interrupted, failed, and incomplete streams also raise errors. Unfinished tool calls are never completed for dispatch. Unknown provider error codes use a generic Symfony AI runtime exception unless HTTP status determines another type; do not infer a retry guarantee from an unknown code.
+Empty, interrupted, failed, and incomplete streams also raise errors. Unfinished tool calls are never completed for dispatch. Unmapped provider errors raise `Exception\UnmappedBadRequestException` for HTTP 400/403 or `Exception\UnmappedProviderException` otherwise. These extend Symfony AI `BadRequestException` and `RuntimeException`, respectively; do not infer a retry guarantee from an unknown code.
+
+Both implement `Exception\ProviderErrorExceptionInterface`. `getProviderError()` returns validated `code`, `type`, and `param` identifiers, and `getStatusCode()` returns the HTTP status when available. Each identifier must start with an ASCII letter, digit, or underscore, contain only ASCII letters, digits, underscores, dots, colons, brackets, or hyphens, and fit in 128 bytes. Invalid fields are omitted. Provider free-text messages and bodies are never retained. Recognized error categories keep their existing exception classes and messages.
 
 ## Generic OAuth helpers
 

@@ -7,12 +7,12 @@ namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\OAuthConfig;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionLimitException;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionPolicyException;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\UnmappedBadRequestException;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\UnmappedProviderException;
 use Symfony\AI\Platform\Exception\AuthenticationException;
-use Symfony\AI\Platform\Exception\BadRequestException;
 use Symfony\AI\Platform\Exception\ContentFilterException;
 use Symfony\AI\Platform\Exception\ExceedContextSizeException;
 use Symfony\AI\Platform\Exception\RateLimitExceededException;
-use Symfony\AI\Platform\Exception\RuntimeException;
 use Symfony\AI\Platform\Exception\ServerException;
 
 final class ProviderErrorMapper
@@ -48,10 +48,10 @@ final class ProviderErrorMapper
             throw new ServerException($status, 'ChatGPT is temporarily unavailable.');
         }
         if (400 === $status || 403 === $status) {
-            throw new BadRequestException('ChatGPT rejected the request or account permissions.');
+            throw new UnmappedBadRequestException($error, $status);
         }
 
         // Never copy an error body/message into exceptions that the host logs.
-        throw new RuntimeException('ChatGPT request failed.');
+        throw new UnmappedProviderException($error, $status);
     }
 }
