@@ -17,6 +17,7 @@ use Symfony\AI\Platform\Message\Message;
 use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\AI\Platform\Message\SystemMessage;
 use Symfony\AI\Platform\Result\Stream\AssistantMessageStreamListener;
+use Symfony\AI\Platform\Result\Stream\Delta\CommentaryDelta;
 use Symfony\AI\Platform\Result\Stream\Delta\DeltaInterface;
 use Symfony\AI\Platform\Result\Stream\Delta\TextDelta;
 use Symfony\AI\Platform\Result\StreamResult;
@@ -91,6 +92,8 @@ final class FactoryTest extends TestCase
                 $native[$index] = $delta->getContent();
             } elseif ($delta instanceof TextDelta) {
                 $visible .= $delta->getText();
+            } elseif ($delta instanceof CommentaryDelta) {
+                $visible .= $delta->getCommentary();
             } elseif ($delta instanceof DeltaInterface) {
                 $framework->accumulate($delta);
             }
