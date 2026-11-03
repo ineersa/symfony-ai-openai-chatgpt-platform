@@ -57,7 +57,9 @@ Port and timeout are constructor settings, not command options. See [authenticat
 
 ## Storage
 
-`Auth\AuthFileStore(string $path, LockFactory $lockFactory, Filesystem $filesystem = new Filesystem())` implements `Auth\AuthStorageInterface`.
+`Auth\AuthFileStore(string $path, LockFactory $lockFactory, Filesystem $filesystem = new Filesystem(), ?string $installationId = null)` implements `Auth\AuthStorageInterface`.
+
+The optional installation ID is a host application's durably persisted UUID URN. An invalid configured value raises `InvalidArgumentException`. A new store saves the configured ID instead of generating one; an existing store retains its saved ID and raises `AuthException` from `installationId()` if the configured value differs. The default remains unchanged. See [host identity configuration](oauth.md#configure-a-host-identity-independently-of-credentials) for reconnect and migration boundaries.
 
 | Method | Return type | Contract |
 | --- | --- | --- |

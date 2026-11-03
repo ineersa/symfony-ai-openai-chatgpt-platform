@@ -15,6 +15,22 @@ use Symfony\Component\Lock\Store\FlockStore;
 
 final class AuthFileStoreTest extends IsolatedTestCase
 {
+    public function testConfiguredInstallationIsSharedWithoutSharingCredentialRecords(): void
+    {
+        $hostId = 'urn:uuid:4eafc4aa-6d34-4a3b-b3a4-92595d6d808a';
+        $locks = new LockFactory(new FlockStore($this->directory));
+        $first = new AuthFileStore($this->directory.'/first.json', $locks, installationId: $hostId);
+        $second = new AuthFileStore($this->directory.'/second.json', $locks, installationId: $hostId);
+        self::assertSame($hostId, $first->installationId());
+        self::assertSame($hostId, $second->installationId());
+        $first->update(static fn (): AuthRecord => AuthFixture::record());
+        self::assertSame('issued-client', $first->load()?->clientId);
+        self::assertNull($second->load());
+        $reopened = new AuthFileStore($this->directory.'/second.json', $locks, installationId: $hostId);
+        self::assertSame($hostId, $reopened->installationId());
+        self::assertSame($hostId, (new AuthFileStore($this->directory.'/second.json', $locks))->installationId());
+    }
+
     public function testProtectsAtomicStorageAndPreservesOtherRecordsAndInstallation(): void
     {
         $path = $this->directory.'/auth.json';
