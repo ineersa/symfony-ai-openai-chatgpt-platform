@@ -13,10 +13,13 @@ final class AuthFileStore implements AuthStorageInterface
 {
     private readonly string $path;
 
-    public function __construct(string $path, private readonly LockFactory $lockFactory, private readonly Filesystem $filesystem = new Filesystem())
+    public function __construct(string $path, private readonly LockFactory $lockFactory, private readonly Filesystem $filesystem = new Filesystem(), private readonly ?string $installationId = null)
     {
         if ('' === $path) {
             throw new \InvalidArgumentException('An auth storage path is required.');
+        }
+        if (null !== $installationId && !self::validInstallationId($installationId)) {
+            throw new \InvalidArgumentException('The configured ChatGPT installation identity must be a UUID URN.');
         }
         $cwd = getcwd();
         if (false === $cwd) {
@@ -31,13 +34,16 @@ final class AuthFileStore implements AuthStorageInterface
             $data = $this->readState();
             $id = $data['chatgpt']['host_id'] ?? null;
             if (null !== $id) {
-                if (!\is_string($id) || !str_starts_with($id, 'urn:uuid:') || !Uuid::isValid(substr($id, 9))) {
+                if (!\is_string($id) || !self::validInstallationId($id)) {
                     throw new AuthException('Invalid ChatGPT installation identity.');
+                }
+                if (null !== $this->installationId && $id !== $this->installationId) {
+                    throw new AuthException('The configured ChatGPT installation identity differs from the saved identity. Retain the saved identity for this registration.');
                 }
 
                 return $id;
             }
-            $id = 'urn:uuid:'.Uuid::v4()->toRfc4122();
+            $id = $this->installationId ?? 'urn:uuid:'.Uuid::v4()->toRfc4122();
             $data['chatgpt']['host_id'] = $id;
             $this->writeState($data);
 
@@ -65,6 +71,11 @@ final class AuthFileStore implements AuthStorageInterface
 
             return $record;
         });
+    }
+
+    private static function validInstallationId(string $id): bool
+    {
+        return str_starts_with($id, 'urn:uuid:') && Uuid::isValid(substr($id, 9));
     }
 
     /**

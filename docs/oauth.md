@@ -12,6 +12,22 @@ The service uses PKCE S256 with fresh state and nonce. It verifies the ID token'
 
 See OpenAI's [sign-in guide](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) for the protocol.
 
+### Configure a host identity independently of credentials
+
+By default, each auth file generates and retains its own `urn:uuid:…` installation identity. A host application with separate credential files can supply one durably configured host UUID instead:
+
+```php
+$store = new AuthFileStore($credentialPath, $locks, installationId: $persistedHostId);
+```
+
+Generate and persist `$persistedHostId` once for this host, not on each request, account change or worktree creation. It must use the existing `urn:uuid:` format followed by a valid UUID. The store persists this value when no host identity is saved. Credential files and their locks remain separate; supplying the same host ID does not share credentials or registration records.
+
+Opt in without rotating existing installations: retain the exact saved host ID when configuring an existing store. If the configured and saved IDs differ, `installationId()` raises `AuthException` before replacing either value; authorization stops. Omitting the argument keeps the existing behavior. This option does not migrate existing files or affect `load()`/`update()` credential operations.
+
+For a same-account reconnect, retain its issued `clientId` **and** the stable host identity. Repeated dynamic registration with the same host ID is not a documented deduplication mechanism. A different account needs its own registration and verified identity; this option does not weaken account binding or add profile management. Applications must keep connection epochs used to invalidate pending attempts or queued work separate from durable installation and registration identifiers.
+
+See OpenAI's [accounts and sessions guide](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions). Revoking a renewable session does not delete its registered client. This option neither removes existing duplicate entries nor changes disconnect behavior.
+
 ## Saved records are not always usable grants
 
 `AuthRecord` stores registration, verified identity, scopes, nonce, and nullable credentials.
