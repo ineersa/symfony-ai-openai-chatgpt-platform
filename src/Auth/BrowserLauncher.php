@@ -40,11 +40,13 @@ final class BrowserLauncher
 
             return $process->isSuccessful();
         } catch (\Throwable $exception) {
-            // The printed URL remains available for manual use. Do not log it.
+            // Browser launch is optional; retain the actual failure while allowing manual use.
             ($logger ?? new NullLogger())->warning('oauth.browser_launch_failed', [
                 'component' => 'oauth',
                 'event_type' => 'oauth.browser_launch_failed',
                 'exception_class' => $exception::class,
+                'exception' => $exception,
+                'error_message' => $exception->getMessage(),
             ]);
 
             return false;

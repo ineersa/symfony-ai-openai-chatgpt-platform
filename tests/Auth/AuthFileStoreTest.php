@@ -67,7 +67,13 @@ final class AuthFileStoreTest extends IsolatedTestCase
         $path = $this->directory.'/auth.json';
         (new Filesystem())->dumpFile($path, 'broken-state');
         $store = new AuthFileStore($path, new LockFactory(new FlockStore($this->directory)));
-        $this->expectException(AuthException::class);
-        $store->installationId();
+        try {
+            $store->installationId();
+            self::fail('Expected invalid JSON.');
+        } catch (AuthException $exception) {
+            self::assertInstanceOf(\JsonException::class, $exception->getPrevious());
+            self::assertStringContainsString($exception->getPrevious()->getMessage(), $exception->getMessage());
+            self::assertSame('broken-state', (new Filesystem())->readFile($path));
+        }
     }
 }

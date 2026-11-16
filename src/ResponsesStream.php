@@ -12,7 +12,7 @@ use Symfony\AI\Platform\Result\Stream\HttpStreamInterface;
 use Symfony\AI\Platform\Result\Stream\RawSseStream;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
-/** Keep framework SSE parsing/conversion; enforce terminal/tool integrity and safe provider errors. */
+/** Keep framework SSE parsing/conversion; enforce terminal/tool integrity and propagate provider errors. */
 final class ResponsesStream implements HttpStreamInterface
 {
     public function stream(ResponseInterface $response): iterable
@@ -31,9 +31,9 @@ final class ResponsesStream implements HttpStreamInterface
             }
             if ('response.incomplete' === $type) {
                 if ('max_output_tokens' === ($event['response']['incomplete_details']['reason'] ?? null)) {
-                    throw new MaxOutputTokensException('ChatGPT response reached an output limit.');
+                    throw new MaxOutputTokensException(ProviderErrorMessage::format($event));
                 }
-                throw new IncompleteStreamException('ChatGPT response is incomplete.');
+                throw new IncompleteStreamException(ProviderErrorMessage::format($event));
             }
             if (\in_array($type, ['response.output_item.added', 'response.output_item.done'], true)
                 && 'function_call' === ($event['item']['type'] ?? null)) {
@@ -79,8 +79,8 @@ final class ResponsesStream implements HttpStreamInterface
         }
         try {
             $arguments = json_decode($item['arguments'], true, flags: \JSON_THROW_ON_ERROR);
-        } catch (\JsonException) {
-            throw new MalformedToolCallException('ChatGPT tool arguments are invalid JSON.');
+        } catch (\JsonException $exception) {
+            throw new MalformedToolCallException($exception->getMessage()."\n".$item['arguments'], 0, $exception);
         }
         if (!\is_array($arguments) || !str_starts_with(ltrim($item['arguments']), '{')) {
             throw new MalformedToolCallException('ChatGPT tool arguments must be an object.');

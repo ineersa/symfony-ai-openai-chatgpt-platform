@@ -4,24 +4,29 @@ declare(strict_types=1);
 
 namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception;
 
-use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Validation\ProviderErrorMetadataValidator;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ProviderErrorMessage;
 use Symfony\AI\Platform\Exception\BadRequestException;
 
 final class UnmappedBadRequestException extends BadRequestException implements ProviderErrorExceptionInterface
 {
-    /** @var array<string, string> */
+    /** @var array<string, mixed> */
     private readonly array $providerError;
 
     /** @param array<string, mixed> $error */
-    public function __construct(array $error, private readonly ?int $statusCode = null)
+    public function __construct(array $error, private readonly ?int $statusCode = null, private readonly ?string $responseBody = null)
     {
-        parent::__construct('ChatGPT rejected the request or account permissions.');
-        $this->providerError = ProviderErrorMetadataValidator::validate($error);
+        parent::__construct(ProviderErrorMessage::format($error, $statusCode, $responseBody));
+        $this->providerError = $error;
     }
 
     public function getProviderError(): array
     {
         return $this->providerError;
+    }
+
+    public function getResponseBody(): ?string
+    {
+        return $this->responseBody;
     }
 
     public function getStatusCode(): ?int

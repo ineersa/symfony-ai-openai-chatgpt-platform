@@ -98,8 +98,8 @@ final class AuthFileStore implements AuthStorageInterface
         try {
             $content = $this->filesystem->readFile($this->path);
             $data = json_decode($content, true, flags: \JSON_THROW_ON_ERROR);
-        } catch (\JsonException) {
-            throw new AuthException('Auth storage contains invalid JSON.');
+        } catch (\JsonException $exception) {
+            throw new AuthException('Auth storage contains invalid JSON: '.$exception->getMessage(), 0, $exception);
         }
         if (!str_starts_with(ltrim($content), '{') || !\is_array($data) || (isset($data['chatgpt']) && !\is_array($data['chatgpt']))) {
             throw new AuthException('Auth storage must contain an object.');

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth;
 
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ProviderErrorMessage;
 use Symfony\Component\Clock\ClockInterface;
 use Symfony\Component\Clock\NativeClock;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -69,7 +70,7 @@ final readonly class OAuthService
             throw new AuthException('OAuth callback state mismatch.');
         }
         if (isset($callback['error'])) {
-            throw new AuthException('ChatGPT authorization was declined or failed.');
+            throw new AuthException(ProviderErrorMessage::format($callback));
         }
         $clientId = $callback['client_id'] ?? $request->registeredClientId;
         if (!\is_string($clientId) || '' === trim($clientId) || 'dynamic_agent_client' === $clientId) {
@@ -140,7 +141,7 @@ final readonly class OAuthService
 
     public function refreshCredentials(bool $force = true): AuthRecord
     {
-        $unusable = false;
+        $unusable = null;
         $updated = $this->storage->update(function (?AuthRecord $record) use ($force, &$unusable): AuthRecord {
             if (null !== $record?->pendingRefresh) {
                 // Resume the saved rotation before checking expiry or issuing another refresh.
@@ -163,8 +164,8 @@ final readonly class OAuthService
                     'refresh_token' => $record->refresh,
                     'resource' => OAuthConfig::RESOURCE,
                 ]);
-            } catch (UnusableRefreshTokenException) {
-                $unusable = true;
+            } catch (UnusableRefreshTokenException $exception) {
+                $unusable = $exception;
 
                 // Persist removal under this lock before surfacing the terminal failure.
                 return AuthRecord::registration($record->clientId, $record->nonce);
@@ -175,8 +176,8 @@ final readonly class OAuthService
             // Remove the consumed grant and commit its replacement before any fallible JWKS fetch.
             return new AuthRecord($record->clientId, null, null, 0, $record->idToken, $record->issuer, $record->subject, $record->scopes, $record->nonce, $pending);
         });
-        if ($unusable) {
-            throw new AuthException('ChatGPT refresh credentials are no longer usable. Run auth:chatgpt login.');
+        if (null !== $unusable) {
+            throw new AuthException($unusable->getMessage(), 0, $unusable);
         }
 
         if (null === $updated->pendingRefresh) {
@@ -225,11 +226,11 @@ final readonly class OAuthService
                     'timeout' => 15, 'max_duration' => 30, 'max_redirects' => 0,
                 ]);
                 if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
-                    throw new AuthException('Revocation failed.');
+                    throw new AuthException(ProviderErrorMessage::format([], $response->getStatusCode(), $response->getContent(false)));
                 }
                 $response->getContent(false);
-            } catch (\Throwable) {
-                throw new AuthException('ChatGPT remote disconnect failed; local credentials remain saved.');
+            } catch (\Throwable $exception) {
+                throw new AuthException($exception->getMessage()."\nRemote disconnect failed; local credentials remain saved.", 0, $exception);
             }
 
             return $record->disconnected();
@@ -256,26 +257,34 @@ final readonly class OAuthService
         try {
             $response = $this->httpClient->request($method, $url, $options + ['timeout' => 15, 'max_duration' => 30, 'max_redirects' => 0, 'headers' => ['Accept' => 'application/json']]);
             $status = $response->getStatusCode();
-            $data = $response->toArray(false);
+            $rawBody = $response->getContent(false);
+            $data = json_decode($rawBody, true);
             if ($status >= 400 && $status < 500 && 'refresh_token' === ($options['body']['grant_type'] ?? null)) {
                 $error = $data['error'] ?? null;
                 $code = \is_array($error) ? ($error['code'] ?? $error['type'] ?? null) : $error;
                 if (\in_array($code, ['invalid_grant', 'invalid_refresh_token', 'token_expired', 'refresh_token_expired', 'refresh_token_invalidated', 'refresh_token_reused'], true)) {
-                    throw new UnusableRefreshTokenException();
+                    throw new UnusableRefreshTokenException(ProviderErrorMessage::format($data, $status, $rawBody));
                 }
             }
             if ($status < 200 || $status >= 300) {
-                throw new AuthException('OAuth endpoint rejected the request.');
+                throw new AuthException(ProviderErrorMessage::format(\is_array($data) ? $data : [], $status, $rawBody));
             }
-            if (array_is_list($data)) {
-                throw new AuthException('OAuth endpoint returned a list.');
+            try {
+                $data = json_decode($rawBody, true, flags: \JSON_THROW_ON_ERROR);
+            } catch (\JsonException $exception) {
+                throw new AuthException($exception->getMessage()."\n".$rawBody, 0, $exception);
+            }
+            if (!\is_array($data) || array_is_list($data)) {
+                throw new AuthException('OAuth endpoint must return an object: '.$rawBody);
             }
 
             return $data;
         } catch (UnusableRefreshTokenException $exception) {
             throw $exception;
-        } catch (\Throwable) {
-            throw new AuthException('ChatGPT OAuth endpoint failed or returned invalid data.');
+        } catch (AuthException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            throw new AuthException($exception->getMessage(), 0, $exception);
         }
     }
 
@@ -289,13 +298,13 @@ final readonly class OAuthService
         $scope = $token['scope'] ?? null;
         if (!\is_string($idToken) || '' === $idToken || !\is_int($expiry) || $expiry <= 0 || $expiry > 31536000
             || !\is_string($scope) || '' === trim($scope)) {
-            throw new AuthException('ChatGPT token response is missing valid credentials, identity or expiry.');
+            throw new AuthException('ChatGPT token response is missing valid credentials, identity or expiry. '.ProviderErrorMessage::format($token));
         }
         $scopes = preg_split('/\s+/', trim($scope)) ?: [];
         $hasDirectScope = \in_array(OAuthConfig::DIRECT_SCOPE, $scopes, true);
         if ((null !== $access || null !== $refresh || $hasDirectScope)
             && (!\is_string($access) || '' === $access || !\is_string($refresh) || '' === $refresh)) {
-            throw new AuthException('ChatGPT token response is missing valid credentials.');
+            throw new AuthException('ChatGPT token response is missing valid credentials. '.ProviderErrorMessage::format($token));
         }
         $identity = $this->idTokenVerifier->verify($idToken, $clientId, $nonce);
         $this->assertIdentity($previous, $identity['issuer'], $identity['subject']);
@@ -315,7 +324,7 @@ final readonly class OAuthService
         if (!\is_string($access) || '' === $access || !\is_string($refresh) || '' === $refresh
             || !\is_string($idToken) || '' === $idToken || !\is_int($expiry) || $expiry <= 0 || $expiry > 31536000
             || !\is_string($scope) || '' === trim($scope)) {
-            throw new AuthException('ChatGPT refresh response is missing valid credentials, identity or expiry.');
+            throw new AuthException('ChatGPT refresh response is missing valid credentials, identity or expiry. '.ProviderErrorMessage::format($token));
         }
 
         $receivedAt = $this->clock->now()->getTimestamp();

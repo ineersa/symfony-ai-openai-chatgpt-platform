@@ -7,8 +7,8 @@ namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth;
 /** Internal signal consumed under the credential storage lock. */
 final class UnusableRefreshTokenException extends \RuntimeException
 {
-    public function __construct()
+    public function __construct(string $message = 'ChatGPT refresh credentials are no longer usable. Run auth:chatgpt login.')
     {
-        parent::__construct('ChatGPT refresh credentials are no longer usable. Run auth:chatgpt login.');
+        parent::__construct($message);
     }
 }

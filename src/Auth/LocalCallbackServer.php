@@ -17,7 +17,7 @@ final class LocalCallbackServer
     /**
      * @param callable(): void|null $afterListen
      *
-     * @return array{code: ?string, state: ?string, client_id: ?string, error: ?string}|null
+     * @return array<array-key, string|null>|null
      */
     public function waitForCallback(string $expectedState, float $timeoutSeconds = 300.0, int $port = OAuthConfig::DEFAULT_PORT, ?callable $afterListen = null, string $callbackPath = '/auth/callback'): ?array
     {
@@ -26,7 +26,7 @@ final class LocalCallbackServer
         }
         $server = @stream_socket_server('tcp://127.0.0.1:'.$port, $errno, $error);
         if (false === $server) {
-            $this->logger->warning('oauth.callback_bind_failed', ['component' => 'oauth', 'event_type' => 'oauth.callback_bind_failed', 'port' => $port]);
+            $this->logger->warning('oauth.callback_bind_failed', ['component' => 'oauth', 'event_type' => 'oauth.callback_bind_failed', 'port' => $port, 'error_code' => $errno, 'error_message' => $error]);
 
             return null;
         }

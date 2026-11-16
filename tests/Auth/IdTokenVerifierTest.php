@@ -37,7 +37,7 @@ final class IdTokenVerifierTest extends TestCase
                     $verifier->verify($invalid, 'issued-client', 'nonce');
                     self::fail('Current-time validation must reject expired or invalid identity.');
                 } catch (AuthException $error) {
-                    self::assertNull($error->getPrevious());
+                    self::assertNotNull($error->getPrevious());
                     self::assertSame(123456, JWT::$timestamp);
                 }
             }
@@ -103,7 +103,7 @@ final class IdTokenVerifierTest extends TestCase
         $token = AuthFixture::idToken();
         [$header, $body] = explode('.', $token);
         $this->expectException(AuthException::class);
-        $this->expectExceptionMessage('signature verification failed');
+        $this->expectExceptionMessage('Signature verification failed');
         $this->verifier()->verify($header.'.'.$body.'.broken-secret-signature', 'issued-client', 'nonce');
     }
 

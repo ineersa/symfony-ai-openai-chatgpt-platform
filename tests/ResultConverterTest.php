@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionLimitException;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionPolicyException;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\UnmappedBadRequestException;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ResponsesStream;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ResultConverter;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\AuthFixture;
@@ -18,14 +19,58 @@ use Symfony\AI\Platform\Result\RawHttpResult;
 use Symfony\AI\Platform\Result\Stream\Delta\TextDelta;
 use Symfony\AI\Platform\Result\StreamResult;
 use Symfony\Component\HttpClient\EventSourceHttpClient;
+use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class ResultConverterTest extends TestCase
 {
+    #[DataProvider('rawErrorBodies')]
+    public function testRetainsCompleteHttpErrorBody(string $body): void
+    {
+        $response = (new MockHttpClient(new MockResponse($body, ['http_code' => 400])))->request('POST', 'https://example.invalid');
+        try {
+            (new ResultConverter())->convert(new RawHttpResult($response));
+            self::fail('Expected HTTP error.');
+        } catch (UnmappedBadRequestException $exception) {
+            self::assertSame($body, $exception->getResponseBody());
+            self::assertStringContainsString($body, $exception->getMessage());
+            self::assertSame(400, $exception->getStatusCode());
+        }
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function rawErrorBodies(): iterable
+    {
+        yield 'JSON envelope' => ['{"error":{"message":"actual rejection","code":"bad_input","detail":{"input":"full value"}},"request_id":"req_one"}'];
+        yield 'HTML gateway' => ["<html>gateway rejected token secret-token</html>\n"];
+        yield 'malformed JSON' => ['{"error":"provider response cut off'];
+        yield 'scalar JSON' => ['"actual scalar rejection"'];
+        yield 'empty body' => [''];
+        yield 'binary body' => ["bad\xff\033[31mresponse"];
+    }
+
+    public function testBodyTransportFailurePropagatesTheOriginalException(): void
+    {
+        $failure = new TransportException('actual socket reset while reading body');
+        $body = (static function () use ($failure): \Generator {
+            yield 'partial error response';
+            throw $failure;
+        })();
+        $response = (new MockHttpClient(new MockResponse($body, ['http_code' => 400])))->request('POST', 'https://example.invalid');
+        try {
+            (new ResultConverter())->convert(new RawHttpResult($response));
+            self::fail('Expected transport failure.');
+        } catch (TransportException $exception) {
+            // HttpClient may wrap a generator failure, but must retain its identity in the chain.
+            self::assertStringContainsString($failure->getMessage(), $exception->getMessage());
+            self::assertTrue($failure === $exception || $failure === $exception->getPrevious());
+        }
+    }
+
     /** @param class-string<\Throwable> $exception */
     #[DataProvider('httpErrors')]
-    public function testConvertsErrorsWithoutRawBodyOrMessage(int $status, string $code, string $exception): void
+    public function testConvertsErrorsWithActualBodyAndMessage(int $status, string $code, string $exception): void
     {
         $response = (new MockHttpClient(new MockResponse(json_encode(['error' => ['code' => $code, 'message' => 'secret-marker']], \JSON_THROW_ON_ERROR), ['http_code' => $status])))->request('POST', 'https://example.invalid');
         try {
@@ -33,10 +78,7 @@ final class ResultConverterTest extends TestCase
             self::fail('Expected failure.');
         } catch (\Throwable $error) {
             self::assertInstanceOf($exception, $error);
-            self::assertStringNotContainsString('secret-marker', $error->getMessage());
-            if ($error instanceof SubscriptionLimitException) {
-                self::assertStringContainsString('https://chatgpt.com/settings/usage', $error->getMessage());
-            }
+            self::assertStringContainsString('secret-marker', $error->getMessage());
         }
     }
 
@@ -72,7 +114,7 @@ final class ResultConverterTest extends TestCase
             $stream->next();
             self::fail('Expected error after partial progress.');
         } catch (ServerException $error) {
-            self::assertStringNotContainsString('secret-marker', $error->getMessage());
+            self::assertStringContainsString('secret-marker', $error->getMessage());
             self::assertSame(1, $client->getRequestsCount());
         }
     }

@@ -116,11 +116,11 @@ An observed OpenAI gateway bug rejects uploads above roughly 1 MiB with HTTP 503
 
 ## Errors
 
-HTTP failures and streamed error events use the same classification. Provider messages and response bodies are not copied into exceptions.
+HTTP failures and streamed error events use the same classification. Exceptions include the actual provider message and complete error payload; HTTP failures also include the original response body, even for HTML, malformed JSON, or other non-JSON responses. The bridge does not redact, truncate, or privacy-filter these diagnostics. **Consumers are responsible for sanitizing errors before displaying, logging, or sharing them.** Provider responses can include credentials, user content, or terminal control characters.
 
 | Exception | Meaning | Host action |
 | --- | --- | --- |
-| `Exception\SubscriptionLimitException` | A recognized permanent quota limit | Do not retry; show the usage link |
+| `Exception\SubscriptionLimitException` | A recognized permanent quota limit | Do not retry; report the provider explanation; usage settings are at `https://chatgpt.com/settings/usage` |
 | `Exception\SubscriptionPolicyException` | A recognized subscription eligibility, scope, capability, or route restriction | Do not retry; inspect its `errorCode`; do not clear credentials automatically |
 | Symfony AI `AuthenticationException` | Authentication failure | Ask the user to reauthorize; the package does not replay the request |
 | Symfony AI `RateLimitExceededException` | Temporary rate limit | Apply the host's retry policy |
@@ -132,7 +132,9 @@ HTTP failures and streamed error events use the same classification. Provider me
 
 Empty, interrupted, failed, and incomplete streams also raise errors. Unfinished tool calls are never completed for dispatch. Unmapped provider errors raise `Exception\UnmappedBadRequestException` for HTTP 400/403 or `Exception\UnmappedProviderException` otherwise. These extend Symfony AI `BadRequestException` and `RuntimeException`, respectively; do not infer a retry guarantee from an unknown code.
 
-Both implement `Exception\ProviderErrorExceptionInterface`. `getProviderError()` returns validated `code`, `type`, and `param` identifiers, and `getStatusCode()` returns the HTTP status when available. Each identifier must start with an ASCII letter, digit, or underscore, contain only ASCII letters, digits, underscores, dots, colons, brackets, or hyphens, and fit in 128 bytes. Invalid fields are omitted. Provider free-text messages and bodies are never retained. Recognized error categories keep their existing exception classes and messages.
+Both implement `Exception\ProviderErrorExceptionInterface`. `getProviderError()` returns the full parsed error array, including messages and nested values; `getStatusCode()` returns the HTTP status when available, and `getResponseBody()` returns the original HTTP error body (or null for streamed errors). Recognized categories retain their existing exception classes and retry semantics, with the actual message and complete payload in `getMessage()` instead of fixed replacement text. `Validation\ProviderErrorMetadataValidator::validate()` remains available for consumers that explicitly want bounded identifier-only metadata (`code`, `type`, and `param`). The bridge does not use it to filter propagated errors.
+
+Transport failures during inference propagate unchanged. OAuth and identity failures retain the actual cause's message and chain the original exception when wrapping is needed for `AuthException`. JSON decode failures retain their cause; invalid HTTP response bodies are included in the error. Terminal refresh failures still persist credential invalidation before surfacing the original provider explanation, and unsuccessful remote revocation still leaves local credentials saved.
 
 ## Generic OAuth helpers
 
