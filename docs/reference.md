@@ -92,7 +92,7 @@ When overriding clocks, inject the same clock into `OAuthService` and `IdTokenVe
 | Reasoning | Requests encrypted content for models declaring `Capability::THINKING` |
 | Generation timeout | 300-second idle timeout; `max_duration: 0` overrides the client's total cap for this request |
 | OAuth timeout | 15-second idle timeout and 30-second total cap for token HTTP requests |
-| Retry | No automatic inference retry or SSE reconnection |
+| Retry | One uncompressed retry for a compressed HTTP 400 when JSON is below 1 MiB; no other automatic inference retry or SSE reconnection |
 
 Supported input item types are `message`, `reasoning`, `function_call`, `function_call_output`, and `additional_tools`. Ordinary role/content messages may omit `type`. Native `configuration_update` items, hosted tools, and tool-search items are rejected before HTTP.
 
@@ -113,6 +113,8 @@ The client uses HTTP with SSE responses. It sends `Originator` from `OAuthConfig
 When `ext-zstd` is loaded, the client compresses the final JSON body with Zstandard level 4. It sends those bytes with `Content-Encoding: zstd` only if they are smaller than the JSON and the compression ratio does not exceed 100:1. Otherwise, or without the extension, it sends plain JSON.
 
 Compression preserves the entire request, including encrypted reasoning, tools, history, and options. A failed compression call raises `RuntimeException` before inference; the client does not fall back to plain JSON on failure or truncate history.
+
+If an originally compressed request receives HTTP 400 before streaming starts, the client retries once with the identical uncompressed JSON only when its encoded byte length is strictly less than 1 MiB (1,048,576 bytes). Authentication, cache affinity, and other request options are preserved; the fallback removes `Content-Encoding`. JSON at or above that cap remains compressed without this retry. The rejected response is canceled without reading its body, and any fallback failure propagates normally. Other HTTP statuses, transport failures, and application-level SSE errors do not trigger this fallback.
 
 An observed OpenAI gateway bug rejects uploads above roughly 1 MiB with HTTP 503. This limit concerns uploaded bytes, not tokens, and is not a documented universal API limit. Compression mitigates it but can still produce a request too large for the affected gateway. See [compression setup](usage.md#enable-request-compression).
 
