@@ -11,7 +11,9 @@ use Symfony\AI\Platform\Exception\InvalidArgumentException;
 use Symfony\AI\Platform\JsonBodyEncodingTrait;
 use Symfony\AI\Platform\Model;
 use Symfony\AI\Platform\Result\RawHttpResult;
+use Symfony\Component\HttpClient\Response\AsyncContext;
 use Symfony\Component\HttpClient\Response\AsyncResponse;
+use Symfony\Contracts\HttpClient\ChunkInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 final class ModelClient extends OpenResponsesModelClient
@@ -42,7 +44,7 @@ final class ModelClient extends OpenResponsesModelClient
         if (!\is_string($cacheKey) || '' === $cacheKey) {
             throw new InvalidArgumentException('ChatGPT requests require a non-empty string prompt_cache_key.');
         }
-        $body = $this->encodeJsonBody($body);
+        $json = $body = $this->encodeJsonBody($body);
         $encoding = [];
         if (\extension_loaded('zstd')) {
             $compress = 'zstd_compress';
@@ -57,8 +59,7 @@ final class ModelClient extends OpenResponsesModelClient
                 $encoding = ['Content-Encoding' => 'zstd'];
             }
         }
-        // AsyncResponse makes the framework stream parser usable without EventSourceHttpClient's reconnect policy.
-        $response = new AsyncResponse($this->client, 'POST', 'https://api.openai.com/v1/responses', [
+        $requestOptions = [
             // ChatGPT routing derives prompt-cache affinity from the session-id header; the body's
             // prompt_cache_key alone leaves requests flapping between cache shards (measured 2026-10-12:
             // no header 19.5% token reuse, session-id 85-97% on identical bodies via api.openai.com).
@@ -76,7 +77,37 @@ final class ModelClient extends OpenResponsesModelClient
             'max_duration' => 0.0,
             'max_redirects' => 0,
             'buffer' => false,
-        ]);
+        ];
+        $passthru = null;
+        // Some valid zstd representations receive a wire-level 400. Retry identical JSON only
+        // below the gateway's 1 MiB upload cap; larger histories must retain compression.
+        if ([] !== $encoding && \strlen($json) < 1048576) {
+            $requestOptionsWithoutCompression = $requestOptions;
+            $requestOptionsWithoutCompression['body'] = $json;
+            // An empty header also suppresses a Content-Encoding inherited from client defaults.
+            $requestOptionsWithoutCompression['headers']['Content-Encoding'] = [];
+            $passthru = static function (ChunkInterface $chunk, AsyncContext $context) use ($requestOptionsWithoutCompression): \Generator {
+                if ($context->getInfo('canceled') || $chunk->isTimeout() || !$chunk->isFirst()) {
+                    yield $chunk;
+
+                    return;
+                }
+                // Stop filtering after the first HTTP response: never retry the fallback
+                // or application-level SSE errors after a successful HTTP response.
+                if (400 === $context->getStatusCode()) {
+                    $context->getResponse()->cancel();
+                    $context->replaceRequest('POST', 'https://api.openai.com/v1/responses', $requestOptionsWithoutCompression);
+                    $context->passthru();
+
+                    return;
+                }
+
+                $context->passthru();
+                yield $chunk;
+            };
+        }
+        // AsyncResponse makes the framework stream parser usable without EventSourceHttpClient's reconnect policy.
+        $response = new AsyncResponse($this->client, 'POST', 'https://api.openai.com/v1/responses', $requestOptions, $passthru);
 
         return new RawHttpResult($response, new ResponsesStream());
     }

@@ -114,6 +114,8 @@ When `ext-zstd` is loaded, the client compresses the final JSON body with Zstand
 
 Compression preserves the entire request, including encrypted reasoning, tools, history, and options. A failed compression call raises `RuntimeException` before inference; the client does not fall back to plain JSON on failure or truncate history.
 
+If an originally compressed request receives HTTP 400 before streaming starts, the client retries once with the identical uncompressed JSON only when its encoded byte length is strictly less than 1 MiB (1,048,576 bytes). Authentication, cache affinity, and other request options are preserved; the fallback removes `Content-Encoding`. JSON at or above that cap remains compressed without this retry. The rejected response is canceled without reading its body, and any fallback failure propagates normally. Other HTTP statuses, transport failures, and application-level SSE errors do not trigger this fallback.
+
 An observed OpenAI gateway bug rejects uploads above roughly 1 MiB with HTTP 503. This limit concerns uploaded bytes, not tokens, and is not a documented universal API limit. Compression mitigates it but can still produce a request too large for the affected gateway. See [compression setup](usage.md#enable-request-compression).
 
 ## Errors
