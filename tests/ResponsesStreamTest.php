@@ -25,7 +25,7 @@ final class ResponsesStreamTest extends TestCase
      * @param class-string<\Throwable>   $exception
      */
     #[DataProvider('failedStreams')]
-    public function testRejectsIncompleteOrFailedStreamsWithoutExposingProviderBodies(array $events, string $exception): void
+    public function testRejectsIncompleteOrFailedStreamsWithProviderDiagnostics(array $events, string $exception): void
     {
         $response = (new EventSourceHttpClient(new MockHttpClient(new MockResponse(AuthFixture::sse($events)))))->request('GET', 'https://example.invalid');
         try {
@@ -33,7 +33,12 @@ final class ResponsesStreamTest extends TestCase
             self::fail('Expected stream rejection.');
         } catch (\Throwable $error) {
             self::assertInstanceOf($exception, $error);
-            self::assertStringNotContainsString('secret-marker', $error->getMessage());
+            if (str_contains(json_encode($events, \JSON_THROW_ON_ERROR), 'secret-marker')) {
+                self::assertStringContainsString('secret-marker', $error->getMessage());
+            }
+            if ($error instanceof MalformedToolCallException) {
+                self::assertInstanceOf(\JsonException::class, $error->getPrevious());
+            }
         }
     }
 

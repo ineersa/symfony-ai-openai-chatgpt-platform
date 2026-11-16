@@ -7,7 +7,7 @@ namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth;
 /** Provider-neutral parser. The caller enforces its redirect URI and mandatory state policy. */
 final class ManualCodeParser
 {
-    /** @return array{code: ?string, state: ?string, client_id: ?string, error: ?string} */
+    /** @return array<array-key, string|null> */
     public static function parse(#[\SensitiveParameter] string $input): array
     {
         $input = trim($input);
@@ -25,7 +25,7 @@ final class ManualCodeParser
             $parameters['code'] = $input;
         }
         $result = [];
-        foreach (['code', 'state', 'client_id', 'error'] as $key) {
+        foreach (array_unique(['code', 'state', 'client_id', 'error', ...array_keys($parameters)]) as $key) {
             $value = $parameters[$key] ?? null;
             if (null !== $value && !\is_string($value)) {
                 throw new AuthException('OAuth callback contains a non-scalar parameter.');

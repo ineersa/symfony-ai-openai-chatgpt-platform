@@ -6,8 +6,10 @@ namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception;
 
 interface ProviderErrorExceptionInterface
 {
-    /** @return array<string, string> */
+    /** @return array<string, mixed> */
     public function getProviderError(): array;
 
     public function getStatusCode(): ?int;
+
+    public function getResponseBody(): ?string;
 }

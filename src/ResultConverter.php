@@ -25,12 +25,12 @@ final class ResultConverter extends OpenResponsesResultConverter
         }
         $status = $result->getObject()->getStatusCode();
         if ($status < 200 || $status >= 300) {
-            try {
-                $data = $result->getObject()->toArray(false);
-            } catch (\Throwable) {
-                ProviderErrorMapper::throwError([], $status);
-            }
-            ProviderErrorMapper::throwError(\is_array($data['error'] ?? null) ? $data['error'] : [], $status);
+            // Read once without HTTP exceptions. Transport failures propagate unchanged;
+            // non-JSON error bodies are still the provider's actual diagnostics.
+            $body = $result->getObject()->getContent(false);
+            $data = json_decode($body, true);
+            $error = \is_array($data) ? (\is_array($data['error'] ?? null) ? $data['error'] : $data) : [];
+            ProviderErrorMapper::throwError($error, $status, $body);
         }
 
         // The direct-token preview is always streamed, even if a consumer omitted its stream option.

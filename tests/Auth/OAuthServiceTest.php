@@ -14,6 +14,7 @@ use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\IdTokenVerifier;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\OAuthConfig;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\OAuthService;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\PendingRefreshDTO;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth\UnusableRefreshTokenException;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\AuthFixture;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\InMemoryAuthStorage;
 use Symfony\AI\Platform\Bridge\OpenAIChatGPT\Tests\Support\IsolatedTestCase;
@@ -57,7 +58,7 @@ final class OAuthServiceTest extends IsolatedTestCase
             $service->refreshCredentials();
             self::fail('Expected post-rotation JWKS failure.');
         } catch (AuthException $error) {
-            self::assertNull($error->getPrevious());
+            self::assertNotNull($error->getPrevious());
         }
         $pending = $store->load()?->pendingRefresh;
         self::assertNotNull($pending);
@@ -123,8 +124,8 @@ final class OAuthServiceTest extends IsolatedTestCase
             $service->refreshCredentials();
             self::fail('Expected temporary verification failure after successful rotation.');
         } catch (AuthException $error) {
-            self::assertNull($error->getPrevious());
-            self::assertStringNotContainsString('secret-marker', $error->getMessage());
+            self::assertNotNull($error->getPrevious());
+            self::assertStringContainsString('secret-marker', $error->getMessage());
         }
         $pending = (new AuthFileStore($path, $locks))->load();
         self::assertNotNull($pending);
@@ -274,8 +275,10 @@ final class OAuthServiceTest extends IsolatedTestCase
                 $service->refreshCredentials($force);
                 self::fail('Expected identity verification failure.');
             } catch (AuthException $error) {
-                self::assertNull($error->getPrevious());
-                self::assertStringNotContainsString('secret-marker', $error->getMessage());
+                self::assertNotSame('', $error->getMessage());
+                if (null !== $error->getPrevious()) {
+                    self::assertSame($error->getPrevious()->getMessage(), $error->getMessage());
+                }
                 if (null === $saved) {
                     $saved = $storage->load();
                 } else {
@@ -435,8 +438,10 @@ final class OAuthServiceTest extends IsolatedTestCase
             $service->refreshCredentials();
             self::fail('Expected refresh failure.');
         } catch (AuthException $error) {
-            self::assertNull($error->getPrevious());
-            self::assertStringNotContainsString('secret-marker', $error->getMessage());
+            self::assertStringContainsString(json_encode($body, \JSON_THROW_ON_ERROR), $error->getMessage());
+            if ($terminal) {
+                self::assertInstanceOf(UnusableRefreshTokenException::class, $error->getPrevious());
+            }
             $saved = $storage->load();
             self::assertNotNull($saved);
             if ($terminal) {
@@ -466,7 +471,7 @@ final class OAuthServiceTest extends IsolatedTestCase
         yield 'temporary terminal-looking body' => [['error' => 'invalid_grant'], 503, false];
     }
 
-    public function testNetworkFailurePreservesRefreshGrantWithoutExceptionChain(): void
+    public function testNetworkFailurePreservesRefreshGrantAndOriginalExceptionChain(): void
     {
         $record = AuthFixture::record();
         $storage = new InMemoryAuthStorage($record);
@@ -478,8 +483,8 @@ final class OAuthServiceTest extends IsolatedTestCase
             self::fail('Expected network failure.');
         } catch (AuthException $error) {
             self::assertSame($record, $storage->load());
-            self::assertNull($error->getPrevious());
-            self::assertStringNotContainsString('secret-marker', $error->getMessage());
+            self::assertNotNull($error->getPrevious());
+            self::assertStringContainsString('secret-marker', $error->getMessage());
         }
     }
 
@@ -596,7 +601,8 @@ final class OAuthServiceTest extends IsolatedTestCase
             $service->completeAuthorization($request, ['state' => $request->state, 'code' => 'code', 'client_id' => 'issued-client']);
             self::fail('Expected unverified identity rejection.');
         } catch (AuthException $exception) {
-            self::assertStringContainsString('signature verification failed', $exception->getMessage());
+            self::assertNotNull($exception->getPrevious());
+            self::assertSame($exception->getPrevious()->getMessage(), $exception->getMessage());
             self::assertNotNull($storage->record);
             self::assertSame('issued-client', $storage->record->clientId);
             self::assertNull($storage->record->access);
@@ -651,7 +657,7 @@ final class OAuthServiceTest extends IsolatedTestCase
     }
 
     #[DataProvider('malformedResponses')]
-    public function testFailedRefreshPreservesCredentialsAndDoesNotExposeRawFailure(string $response, int $status): void
+    public function testFailedRefreshPreservesCredentialsAndActualFailure(string $response, int $status): void
     {
         $record = AuthFixture::record(1);
         $storage = new InMemoryAuthStorage($record);
@@ -661,8 +667,10 @@ final class OAuthServiceTest extends IsolatedTestCase
             self::fail('Expected refresh failure.');
         } catch (AuthException $exception) {
             self::assertSame($record, $storage->record);
-            self::assertStringNotContainsString('secret-marker', $exception->getMessage());
-            self::assertNull($exception->getPrevious());
+            self::assertStringContainsString($response, $exception->getMessage());
+            if ('secret-marker' === $response) {
+                self::assertInstanceOf(\JsonException::class, $exception->getPrevious());
+            }
         }
     }
 
@@ -707,7 +715,7 @@ final class OAuthServiceTest extends IsolatedTestCase
         } catch (AuthException $exception) {
             self::assertStringContainsString('local credentials remain saved', $exception->getMessage());
             self::assertSame($record, $storage->record);
-            self::assertStringNotContainsString('secret-marker', $exception->getMessage());
+            self::assertStringContainsString('secret-marker', $exception->getMessage());
         }
     }
 
@@ -731,7 +739,7 @@ final class OAuthServiceTest extends IsolatedTestCase
             $service->completeAuthorization($request, ['state' => $request->state, 'code' => 'code', 'client_id' => 'issued-client']);
             self::fail('Expected token exchange failure.');
         } catch (AuthException $exception) {
-            self::assertStringContainsString('OAuth endpoint failed', $exception->getMessage());
+            self::assertStringContainsString("HTTP 500\nfailure", $exception->getMessage());
             self::assertSame($hostId, $store->installationId());
             self::assertSame('issued-client', $store->load()?->clientId);
             self::assertNull($store->load()?->access);

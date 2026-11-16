@@ -6,6 +6,7 @@ namespace Symfony\AI\Platform\Bridge\OpenAIChatGPT\Auth;
 
 use Firebase\JWT\JWK;
 use Firebase\JWT\JWT;
+use Symfony\AI\Platform\Bridge\OpenAIChatGPT\ProviderErrorMessage;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
 use Symfony\Component\Clock\ClockInterface;
 use Symfony\Component\Clock\NativeClock;
@@ -65,9 +66,8 @@ final readonly class IdTokenVerifier
             } finally {
                 JWT::$timestamp = $previousTimestamp;
             }
-        } catch (\Throwable) {
-            // Deliberately discard library/HTTP exception payloads, which can include credentials or bodies.
-            throw new AuthException('ChatGPT ID-token signature verification failed.');
+        } catch (\Throwable $exception) {
+            throw new AuthException($exception->getMessage(), 0, $exception);
         }
         $audience = \is_array($claims->aud ?? null) ? $claims->aud : [$claims->aud ?? null];
         foreach ($audience as $audienceId) {
@@ -98,7 +98,19 @@ final readonly class IdTokenVerifier
     {
         return $this->cache->get(self::JWKS_CACHE_KEY, function (ItemInterface $item): array {
             $response = $this->httpClient->request('GET', OAuthConfig::ISSUER.'/.well-known/jwks.json', ['timeout' => 15, 'max_duration' => 30, 'max_redirects' => 0]);
-            $jwks = $response->toArray();
+            $status = $response->getStatusCode();
+            $body = $response->getContent(false);
+            if ($status < 200 || $status >= 300) {
+                throw new AuthException(ProviderErrorMessage::format([], $status, $body));
+            }
+            try {
+                $jwks = json_decode($body, true, flags: \JSON_THROW_ON_ERROR);
+            } catch (\JsonException $exception) {
+                throw new AuthException($exception->getMessage()."\n".$body, 0, $exception);
+            }
+            if (!\is_array($jwks)) {
+                throw new AuthException('JWKS response must be an object: '.$body);
+            }
             // Restrict to the issuer's advertised signing algorithm, regardless of token header input.
             foreach ($jwks['keys'] ?? [] as $key) {
                 if (isset($key['alg']) && 'RS256' !== $key['alg']) {

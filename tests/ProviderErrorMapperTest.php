@@ -15,48 +15,49 @@ final class ProviderErrorMapperTest extends TestCase
 {
     /** @param array<string, mixed> $error */
     #[\PHPUnit\Framework\Attributes\DataProvider('mappedErrors')]
-    public function testKnownErrorsKeepTheirClassAndMessage(array $error, ?int $status, string $class, string $message): void
+    public function testKnownErrorsKeepTheirClassAndActualProviderDetails(array $error, ?int $status, string $class): void
     {
         try {
-            ProviderErrorMapper::throwError($error + ['message' => 'private provider body'], $status);
+            ProviderErrorMapper::throwError($error + ['message' => 'private provider body', 'details' => ['original' => 'nested provider detail']], $status);
         } catch (\Throwable $exception) {
             self::assertSame($class, $exception::class);
-            self::assertSame($message, $exception->getMessage());
+            self::assertStringContainsString('private provider body', $exception->getMessage());
+            self::assertStringContainsString('nested provider detail', $exception->getMessage());
             self::assertNotInstanceOf(ProviderErrorExceptionInterface::class, $exception);
         }
     }
 
-    /** @return iterable<string, array{array<string, mixed>, int|null, class-string<\Throwable>, string}> */
+    /** @return iterable<string, array{array<string, mixed>, int|null, class-string<\Throwable>}> */
     public static function mappedErrors(): iterable
     {
-        yield 'subscription' => [['code' => 'insufficient_quota'], 400, \Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionLimitException::class, 'ChatGPT subscription usage is unavailable. Manage usage at https://chatgpt.com/settings/usage'];
-        yield 'policy' => [['code' => 'chatpass_v2_scope_not_authorized'], 403, \Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionPolicyException::class, 'ChatGPT rejected subscription access. Check account eligibility, authorization, and supported request capabilities.'];
-        yield 'context' => [['code' => 'context_length_exceeded'], 400, \Symfony\AI\Platform\Exception\ExceedContextSizeException::class, 'ChatGPT context exceeds the model limit.'];
-        yield 'content' => [['code' => 'content_filter'], 400, \Symfony\AI\Platform\Exception\ContentFilterException::class, 'ChatGPT declined the content.'];
-        yield 'auth' => [[], 401, \Symfony\AI\Platform\Exception\AuthenticationException::class, 'ChatGPT authentication failed. Reauthorize with auth:chatgpt login.'];
-        yield 'rate limit' => [[], 429, \Symfony\AI\Platform\Exception\RateLimitExceededException::class, 'Rate limit exceeded. ChatGPT request was rate limited. Manage usage at https://chatgpt.com/settings/usage'];
-        yield 'server' => [[], 503, ServerException::class, 'Server error (HTTP 503). ChatGPT is temporarily unavailable.'];
+        yield 'subscription' => [['code' => 'insufficient_quota'], 400, \Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionLimitException::class];
+        yield 'policy' => [['code' => 'chatpass_v2_scope_not_authorized'], 403, \Symfony\AI\Platform\Bridge\OpenAIChatGPT\Exception\SubscriptionPolicyException::class];
+        yield 'context' => [['code' => 'context_length_exceeded'], 400, \Symfony\AI\Platform\Exception\ExceedContextSizeException::class];
+        yield 'content' => [['code' => 'content_filter'], 400, \Symfony\AI\Platform\Exception\ContentFilterException::class];
+        yield 'auth' => [[], 401, \Symfony\AI\Platform\Exception\AuthenticationException::class];
+        yield 'rate limit' => [[], 429, \Symfony\AI\Platform\Exception\RateLimitExceededException::class];
+        yield 'server' => [[], 503, ServerException::class];
     }
 
-    public function testUnmappedBadRequestRetainsOnlyStructuredMetadata(): void
+    public function testUnmappedBadRequestRetainsAllProviderData(): void
     {
         try {
             ProviderErrorMapper::throwError(['code' => 'string_above_max_length', 'type' => 'invalid_request_error', 'param' => 'input[3].call_id', 'message' => 'secret prompt'], 400);
         } catch (UnmappedBadRequestException $exception) {
-            self::assertSame(['code' => 'string_above_max_length', 'type' => 'invalid_request_error', 'param' => 'input[3].call_id'], $exception->getProviderError());
+            self::assertSame(['code' => 'string_above_max_length', 'type' => 'invalid_request_error', 'param' => 'input[3].call_id', 'message' => 'secret prompt'], $exception->getProviderError());
             self::assertSame(400, $exception->getStatusCode());
-            self::assertSame('ChatGPT rejected the request or account permissions.', $exception->getMessage());
+            self::assertStringContainsString('secret prompt', $exception->getMessage());
         }
     }
 
-    public function testUnmappedGenericFailureRejectsUnsafeMetadata(): void
+    public function testUnmappedFailurePreservesArbitraryProviderData(): void
     {
         try {
             ProviderErrorMapper::throwError(['code' => "bad\033[31m", 'type' => str_repeat('x', 129), 'param' => ['secret'], 'message' => 'secret prompt']);
         } catch (RuntimeException $exception) {
             self::assertInstanceOf(ProviderErrorExceptionInterface::class, $exception);
-            self::assertSame([], $exception->getProviderError());
-            self::assertSame('ChatGPT request failed.', $exception->getMessage());
+            self::assertSame(['code' => "bad\033[31m", 'type' => str_repeat('x', 129), 'param' => ['secret'], 'message' => 'secret prompt'], $exception->getProviderError());
+            self::assertStringContainsString('secret prompt', $exception->getMessage());
         }
     }
 
@@ -66,10 +67,10 @@ final class ProviderErrorMapperTest extends TestCase
         ProviderErrorMapper::throwError(['code' => 'unknown', 'type' => 'server_error', 'message' => 'secret-marker']);
     }
 
-    public function testMalformedCodesDoNotGetInterpolatedIntoErrors(): void
+    public function testMalformedCodesStillPreserveProviderMessage(): void
     {
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('ChatGPT request failed.');
+        $this->expectExceptionMessage('secret-marker');
         ProviderErrorMapper::throwError(['code' => ['secret-marker'], 'type' => null, 'message' => 'secret-marker']);
     }
 }

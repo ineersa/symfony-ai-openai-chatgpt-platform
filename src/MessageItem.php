@@ -22,12 +22,9 @@ final class MessageItem
         if (null === $text->getSignature()) {
             return null;
         }
-        try {
-            $item = json_decode($text->getSignature(), true, flags: \JSON_THROW_ON_ERROR);
-        } catch (\JsonException) {
-            // Other providers' opaque signatures are not ChatGPT message items.
-            return null;
-        }
+        // Other providers' opaque signatures are not ChatGPT message items.
+        // Decoding here is a format probe, not a fallible provider operation.
+        $item = json_decode($text->getSignature(), true);
         if (!\is_array($item) || 'message' !== ($item['type'] ?? null)) {
             return null;
         }
