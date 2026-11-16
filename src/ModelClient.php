@@ -46,7 +46,7 @@ final class ModelClient extends OpenResponsesModelClient
         $encoding = [];
         if (\extension_loaded('zstd')) {
             $compress = 'zstd_compress';
-            $compressed = $compress($body, 3);
+            $compressed = $compress($body, 4);
             if (!\is_string($compressed) || '' === $compressed) {
                 throw new \RuntimeException('ChatGPT request compression failed.');
             }
