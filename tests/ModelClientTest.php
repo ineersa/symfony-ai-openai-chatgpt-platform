@@ -333,9 +333,16 @@ final class ModelClientTest extends TestCase
     #[DataProvider('non400Statuses')]
     public function testCompressedNon400DoesNotFallback(int $status): void
     {
-        $http = new MockHttpClient(new MockResponse('actual response', ['http_code' => $status]));
+        if (!\extension_loaded('zstd')) {
+            self::markTestSkipped('Requires ext-zstd.');
+        }
+        $http = new MockHttpClient(static function (string $method, string $url, array $options) use ($status): MockResponse {
+            self::assertSame(['Content-Encoding: zstd'], $options['normalized_headers']['content-encoding'] ?? []);
+
+            return new MockResponse('actual response', ['http_code' => $status]);
+        });
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
-        $raw = $client->request(new ResponsesModel('test-model'), ['input' => []], ['prompt_cache_key' => 'stable-key']);
+        $raw = $client->request(new ResponsesModel('test-model'), self::compressiblePayload(), ['prompt_cache_key' => 'stable-key']);
         self::assertSame($status, $raw->getObject()->getStatusCode());
         self::assertSame('actual response', $raw->getObject()->getContent(false));
         self::assertSame(1, $http->getRequestsCount());
@@ -355,15 +362,24 @@ final class ModelClientTest extends TestCase
         if (!\extension_loaded('zstd')) {
             self::markTestSkipped('Requires ext-zstd.');
         }
-        $responses = [];
-        if ($duringFallback) {
-            $responses[] = new MockResponse('discarded', ['http_code' => 400]);
-        }
-        $responses[] = new MockResponse('', ['http_code' => 0, 'error' => 'Actual connection failure']);
-        $http = new MockHttpClient($responses);
+        $requests = 0;
+        $http = new MockHttpClient(static function (string $method, string $url, array $options) use ($duringFallback, &$requests): MockResponse {
+            ++$requests;
+            self::assertLessThanOrEqual($duringFallback ? 2 : 1, $requests);
+            if (1 === $requests) {
+                self::assertSame(['Content-Encoding: zstd'], $options['normalized_headers']['content-encoding'] ?? []);
+                if ($duringFallback) {
+                    return new MockResponse('discarded', ['http_code' => 400]);
+                }
+            } else {
+                self::assertSame([], $options['normalized_headers']['content-encoding'] ?? []);
+            }
+
+            return new MockResponse('', ['http_code' => 0, 'error' => 'Actual connection failure']);
+        });
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
         try {
-            (new ResultConverter())->convert($client->request(new ResponsesModel('test-model'), ['input' => []], ['prompt_cache_key' => 'stable-key']));
+            (new ResultConverter())->convert($client->request(new ResponsesModel('test-model'), self::compressiblePayload(), ['prompt_cache_key' => 'stable-key']));
             self::fail('Expected transport failure.');
         } catch (TransportException $exception) {
             self::assertStringContainsString('Actual connection failure', $exception->getMessage());
@@ -380,12 +396,19 @@ final class ModelClientTest extends TestCase
 
     public function testSse400AfterProgressDoesNotFallback(): void
     {
-        $http = new MockHttpClient(new MockResponse(AuthFixture::sse([
-            ['type' => 'response.output_text.delta', 'delta' => 'partial'],
-            ['type' => 'response.failed', 'response' => ['error' => ['code' => 'bad_request', 'message' => 'Actual SSE failure']]],
-        ]), ['response_headers' => ['content-type: text/event-stream']]));
+        if (!\extension_loaded('zstd')) {
+            self::markTestSkipped('Requires ext-zstd.');
+        }
+        $http = new MockHttpClient(static function (string $method, string $url, array $options): MockResponse {
+            self::assertSame(['Content-Encoding: zstd'], $options['normalized_headers']['content-encoding'] ?? []);
+
+            return new MockResponse(AuthFixture::sse([
+                ['type' => 'response.output_text.delta', 'delta' => 'partial'],
+                ['type' => 'response.failed', 'response' => ['error' => ['code' => 'bad_request', 'message' => 'Actual SSE failure']]],
+            ]), ['response_headers' => ['content-type: text/event-stream']]);
+        });
         $client = new ModelClient($http, AuthFixture::service(new InMemoryAuthStorage(AuthFixture::record()), $http));
-        $result = (new ResultConverter())->convert($client->request(new ResponsesModel('test-model'), ['input' => []], ['prompt_cache_key' => 'stable-key']));
+        $result = (new ResultConverter())->convert($client->request(new ResponsesModel('test-model'), self::compressiblePayload(), ['prompt_cache_key' => 'stable-key']));
         self::assertInstanceOf(StreamResult::class, $result);
         $stream = $result->getContent();
         self::assertInstanceOf(TextDelta::class, $stream->current());
@@ -397,6 +420,12 @@ final class ModelClientTest extends TestCase
             self::assertStringContainsString('Actual SSE failure', $exception->getMessage());
             self::assertSame(1, $http->getRequestsCount());
         }
+    }
+
+    /** @return array<string, mixed> */
+    private static function compressiblePayload(): array
+    {
+        return ['input' => [['role' => 'user', 'content' => str_repeat('Moderately compressible request history. ', 16)]]];
     }
 
     /** @param array<string, mixed> $options

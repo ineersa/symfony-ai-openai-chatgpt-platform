@@ -92,7 +92,7 @@ When overriding clocks, inject the same clock into `OAuthService` and `IdTokenVe
 | Reasoning | Requests encrypted content for models declaring `Capability::THINKING` |
 | Generation timeout | 300-second idle timeout; `max_duration: 0` overrides the client's total cap for this request |
 | OAuth timeout | 15-second idle timeout and 30-second total cap for token HTTP requests |
-| Retry | No automatic inference retry or SSE reconnection |
+| Retry | One uncompressed retry for a compressed HTTP 400 when JSON is below 1 MiB; no other automatic inference retry or SSE reconnection |
 
 Supported input item types are `message`, `reasoning`, `function_call`, `function_call_output`, and `additional_tools`. Ordinary role/content messages may omit `type`. Native `configuration_update` items, hosted tools, and tool-search items are rejected before HTTP.
 
