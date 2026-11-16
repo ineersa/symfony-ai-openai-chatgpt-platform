@@ -10,4 +10,6 @@ interface ProviderErrorExceptionInterface
     public function getProviderError(): array;
 
     public function getStatusCode(): ?int;
+
+    public function getResponseBody(): ?string;
 }

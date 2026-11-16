@@ -147,4 +147,4 @@ These helpers can also serve other public OAuth clients:
 | `Auth\LocalCallbackServer::waitForCallback(string, float, int, ?callable, string): ?array` | Waits for a loopback callback |
 | `Auth\ManualCodeParser::parse(string): array` | Returns parsed `code`, `state`, `client_id`, and `error` fields |
 
-Callers enforce their own redirect and state requirements. ChatGPT enforces both. Browser and callback degradation logs contain scalar context, not authorization URLs or token responses.
+Callers enforce their own redirect and state requirements. ChatGPT enforces both. Browser and callback degradation logs preserve the original exception diagnostics. Browser process errors can include the command and authorization URL; consumers are responsible for redacting sensitive diagnostics before storing or sharing logs.
