@@ -110,7 +110,7 @@ Streamed Responses usage events pass through OpenResponses `TokenUsageExtractor:
 
 The client uses HTTP with SSE responses. It sends `Originator` from `OAuthConfig::appName`, the application identity used for OAuth registration.
 
-When `ext-zstd` is loaded, the client compresses the final JSON body with Zstandard level 4. It sends those bytes with `Content-Encoding: zstd` only if they are smaller than the JSON and the compression ratio does not exceed 100:1. Otherwise, or without the extension, it sends plain JSON.
+When `ext-zstd` is loaded, the client compresses the final JSON body with Zstandard level 3. It sends those bytes with `Content-Encoding: zstd` only if they are smaller than the JSON and the compression ratio does not exceed 100:1. Otherwise, or without the extension, it sends plain JSON.
 
 Compression preserves the entire request, including encrypted reasoning, tools, history, and options. A failed compression call raises `RuntimeException` before inference; the client does not fall back to plain JSON on failure or truncate history.
 

@@ -199,7 +199,7 @@ final class ModelClientTest extends TestCase
                 $compress = 'zstd_compress';
                 $decoded = $uncompress($options['body']);
                 self::assertIsString($decoded);
-                self::assertSame($options['body'], $compress($decoded, 4));
+                self::assertSame($options['body'], $compress($decoded, 3));
             } else {
                 self::assertArrayNotHasKey('content-encoding', $options['normalized_headers']);
             }
